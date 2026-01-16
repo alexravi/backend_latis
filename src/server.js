@@ -3,6 +3,7 @@
 // Swagger documentation will be configured here
 require('dotenv').config();
 const express = require('express');
+const { swaggerSpec, swaggerUi } = require('./config/swagger');
 
 const app = express();
 
@@ -10,6 +11,11 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Routes will be added here
+// Swagger documentation
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+// Routes
+const authRoutes = require('./routes/authRoutes');
+app.use('/api/auth', authRoutes);
 
 module.exports = app;
