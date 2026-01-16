@@ -31,6 +31,8 @@ const publicationRoutes = require('./routes/publicationRoutes');
 const projectRoutes = require('./routes/projectRoutes');
 const awardRoutes = require('./routes/awardRoutes');
 const organizationRoutes = require('./routes/organizationRoutes');
+const postRoutes = require('./routes/postRoutes');
+const commentRoutes = require('./routes/commentRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -42,5 +44,7 @@ app.use('/api/publications', publicationRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/awards', awardRoutes);
 app.use('/api/organizations', organizationRoutes);
+app.use('/api/posts', postRoutes);
+app.use('/api/comments', commentRoutes);
 
 module.exports = app;
