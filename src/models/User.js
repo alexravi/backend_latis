@@ -75,7 +75,7 @@ const updateProfile = async (id, profileData) => {
       'cover_image_url', 'location', 'phone', 'website', 'current_role',
       'specialization', 'subspecialization', 'years_of_experience',
       'medical_school_graduation_year', 'residency_completion_year',
-      'fellowship_completion_year', 'is_verified', 'is_active'
+      'fellowship_completion_year'
     ];
 
     for (const [key, value] of Object.entries(profileData)) {

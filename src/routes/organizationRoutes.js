@@ -8,6 +8,7 @@ const {
   getOrganizationById,
   updateOrganization,
   validateOrganization,
+  validateOrganizationUpdate,
 } = require('../controllers/organizationController');
 
 /**
@@ -165,6 +166,6 @@ router.get('/:id', authenticateToken, getOrganizationById);
  *       500:
  *         description: Internal server error
  */
-router.put('/:id', authenticateToken, validateOrganization, updateOrganization);
+router.put('/:id', authenticateToken, validateOrganizationUpdate, updateOrganization);
 
 module.exports = router;

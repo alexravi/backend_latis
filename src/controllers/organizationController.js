@@ -16,6 +16,22 @@ const validateOrganization = [
     .withMessage('Organization type is required'),
 ];
 
+// Validation rules for partial updates (optional fields)
+const validateOrganizationUpdate = [
+  body('name')
+    .optional()
+    .trim()
+    .notEmpty()
+    .withMessage('Organization name cannot be empty')
+    .isLength({ max: 255 })
+    .withMessage('Organization name must be less than 255 characters'),
+  body('organization_type')
+    .optional()
+    .trim()
+    .notEmpty()
+    .withMessage('Organization type cannot be empty'),
+];
+
 // Create organization
 const createOrganization = async (req, res) => {
   try {
@@ -140,4 +156,5 @@ module.exports = {
   getOrganizationById,
   updateOrganization,
   validateOrganization,
+  validateOrganizationUpdate,
 };

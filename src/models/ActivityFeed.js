@@ -76,12 +76,17 @@ const findFeed = async (userId, limit = 50, offset = 0) => {
       SELECT af.*, u.first_name, u.last_name, u.profile_image_url
       FROM activity_feed af
       JOIN users u ON af.user_id = u.id
-      LEFT JOIN follows f ON f.following_id = af.user_id AND f.follower_id = $1
-      LEFT JOIN connections c ON (
-        (c.requester_id = $1 AND c.addressee_id = af.user_id) OR
-        (c.requester_id = af.user_id AND c.addressee_id = $1)
-      ) AND c.status = 'connected'
-      WHERE (af.user_id = $1 OR f.id IS NOT NULL OR c.id IS NOT NULL)
+      WHERE af.user_id = $1
+         OR EXISTS (
+           SELECT 1 FROM follows f
+           WHERE f.following_id = af.user_id AND f.follower_id = $1
+         )
+         OR EXISTS (
+           SELECT 1 FROM connections c
+           WHERE ((c.requester_id = $1 AND c.addressee_id = af.user_id) OR
+                  (c.requester_id = af.user_id AND c.addressee_id = $1))
+             AND c.status = 'connected'
+         )
       ORDER BY af.created_at DESC
       LIMIT $2 OFFSET $3
     `;
