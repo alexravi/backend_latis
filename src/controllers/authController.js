@@ -12,6 +12,18 @@ const validateSignUp = [
   body('password')
     .isLength({ min: 6 })
     .withMessage('Password must be at least 6 characters long'),
+  body('first_name')
+    .trim()
+    .notEmpty()
+    .withMessage('First name is required')
+    .isLength({ min: 1, max: 100 })
+    .withMessage('First name must be between 1 and 100 characters'),
+  body('last_name')
+    .trim()
+    .notEmpty()
+    .withMessage('Last name is required')
+    .isLength({ min: 1, max: 100 })
+    .withMessage('Last name must be between 1 and 100 characters'),
 ];
 
 const validateSignIn = [
@@ -36,7 +48,7 @@ const signUp = async (req, res) => {
       });
     }
 
-    const { email, password } = req.body;
+    const { email, password, first_name, last_name } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findByEmail(email);
@@ -51,7 +63,7 @@ const signUp = async (req, res) => {
     const hashedPassword = await hashPassword(password);
 
     // Create user
-    const user = await User.create(email, hashedPassword);
+    const user = await User.create(email, hashedPassword, first_name, last_name);
 
     // Generate JWT token
     const token = generateToken(user.id, user.email);
@@ -63,6 +75,8 @@ const signUp = async (req, res) => {
       user: {
         id: user.id,
         email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
       },
     });
   } catch (error) {
@@ -116,6 +130,8 @@ const signIn = async (req, res) => {
       user: {
         id: user.id,
         email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
       },
     });
   } catch (error) {

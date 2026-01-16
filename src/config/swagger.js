@@ -40,11 +40,19 @@ const options = {
               format: 'email',
               description: 'User email address',
             },
+            first_name: {
+              type: 'string',
+              description: 'User first name',
+            },
+            last_name: {
+              type: 'string',
+              description: 'User last name',
+            },
           },
         },
         SignUpRequest: {
           type: 'object',
-          required: ['email', 'password'],
+          required: ['email', 'password', 'first_name', 'last_name'],
           properties: {
             email: {
               type: 'string',
@@ -57,6 +65,20 @@ const options = {
               minLength: 6,
               description: 'User password (minimum 6 characters)',
               example: 'securePassword123',
+            },
+            first_name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 100,
+              description: 'User first name',
+              example: 'John',
+            },
+            last_name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 100,
+              description: 'User last name',
+              example: 'Doe',
             },
           },
         },
