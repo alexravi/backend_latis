@@ -43,16 +43,16 @@ const create = async (awardData) => {
     `;
     const result = await pool.query(query, [
       awardData.user_id,
-      awardData.organization_id || null,
+      awardData.organization_id ?? null,
       awardData.title,
       awardData.award_type,
-      awardData.issuing_organization || null,
-      awardData.description || null,
-      awardData.date_received || null,
-      awardData.year || null,
-      awardData.monetary_value || null,
-      awardData.currency || null,
-      awardData.url || null
+      awardData.issuing_organization ?? null,
+      awardData.description ?? null,
+      awardData.date_received ?? null,
+      awardData.year ?? null,
+      awardData.monetary_value ?? null,
+      awardData.currency ?? null,
+      awardData.url ?? null
     ]);
     return result.rows[0];
   } catch (error) {

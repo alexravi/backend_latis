@@ -235,7 +235,9 @@ const update = async (id, jobData) => {
       return await findById(id);
     }
 
-    fields.push(`updated_at = NOW()`);
+    fields.push(`updated_at = $${paramCount}`);
+    values.push(new Date());
+    paramCount++;
     values.push(id);
 
     const query = `

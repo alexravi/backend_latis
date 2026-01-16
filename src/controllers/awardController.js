@@ -20,8 +20,18 @@ const validateAward = [
     .withMessage('Date received must be a valid date'),
   body('year')
     .optional()
-    .isInt({ min: 1900, max: new Date().getFullYear() })
-    .withMessage('Year must be a valid year'),
+    .isInt({ min: 1900 })
+    .withMessage('Year must be a valid year')
+    .custom((value) => {
+      if (value === undefined || value === null) {
+        return true;
+      }
+      const currentYear = new Date().getFullYear();
+      if (value < 1900 || value > currentYear) {
+        throw new Error(`Year must be between 1900 and ${currentYear}`);
+      }
+      return true;
+    }),
 ];
 
 // Create award
@@ -35,7 +45,19 @@ const createAward = async (req, res) => {
       });
     }
 
-    const awardData = { ...req.body, user_id: req.user.id };
+    // Explicitly pick only allowed fields to prevent mass assignment
+    const allowedFields = [
+      'organization_id', 'title', 'award_type', 'issuing_organization',
+      'description', 'date_received', 'year', 'monetary_value', 'currency', 'url'
+    ];
+    const awardData = {
+      user_id: req.user.id
+    };
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        awardData[field] = req.body[field];
+      }
+    }
     const award = await Award.create(awardData);
 
     res.status(201).json({

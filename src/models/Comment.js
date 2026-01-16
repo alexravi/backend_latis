@@ -148,7 +148,7 @@ const incrementLikes = async (id, increment = 1) => {
   try {
     const query = `
       UPDATE comments
-      SET likes_count = likes_count + $1, updated_at = NOW()
+      SET likes_count = GREATEST(likes_count + $1, 0), updated_at = NOW()
       WHERE id = $2
       RETURNING *
     `;
@@ -165,7 +165,7 @@ const incrementReplies = async (id, increment = 1) => {
   try {
     const query = `
       UPDATE comments
-      SET replies_count = replies_count + $1, updated_at = NOW()
+      SET replies_count = GREATEST(replies_count + $1, 0), updated_at = NOW()
       WHERE id = $2
       RETURNING *
     `;

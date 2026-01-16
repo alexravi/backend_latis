@@ -1,5 +1,6 @@
 // Connection model - Network relationships (connected, pending, blocked)
 const { pool } = require('../config/database');
+const crypto = require('crypto');
 
 // Initialize connections table
 const initializeConnectionsTable = async () => {
@@ -29,28 +30,60 @@ const initializeConnectionsTable = async () => {
 // Create connection request
 const createRequest = async (requesterId, addresseeId) => {
   try {
-    // First check for existing bidirectional connection
-    const existingQuery = `
-      SELECT * FROM connections
-      WHERE (requester_id = $1 AND addressee_id = $2)
-         OR (requester_id = $2 AND addressee_id = $1)
-    `;
-    const existingResult = await pool.query(existingQuery, [requesterId, addresseeId]);
+    // Canonicalize the pair to ensure consistent ordering
+    const lowId = Math.min(requesterId, addresseeId);
+    const highId = Math.max(requesterId, addresseeId);
+    const isRequesterLow = requesterId === lowId;
     
-    if (existingResult.rows.length > 0) {
-      // Return existing connection
-      return existingResult.rows[0];
+    // Use advisory lock to prevent race conditions
+    // Generate a hash from the two IDs for the advisory lock
+    const lockHash = crypto.createHash('sha256')
+      .update(`${lowId}_${highId}`)
+      .digest()
+      .readUInt32BE(0);
+    
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock($1)', [lockHash]);
+      
+      // Check for existing connection in canonicalized order
+      const existingQuery = `
+        SELECT * FROM connections
+        WHERE (requester_id = $1 AND addressee_id = $2)
+           OR (requester_id = $2 AND addressee_id = $1)
+      `;
+      const existingResult = await client.query(existingQuery, [lowId, highId]);
+      
+      if (existingResult.rows.length > 0) {
+        await client.query('COMMIT');
+        return existingResult.rows[0];
+      }
+      
+      // Insert with original requester/addressee order to preserve semantic meaning
+      const insertQuery = `
+        INSERT INTO connections (requester_id, addressee_id, status)
+        VALUES ($1, $2, 'pending')
+        ON CONFLICT (requester_id, addressee_id) DO NOTHING
+        RETURNING *
+      `;
+      const insertResult = await client.query(insertQuery, [requesterId, addresseeId]);
+      
+      if (insertResult.rows.length > 0) {
+        await client.query('COMMIT');
+        return insertResult.rows[0];
+      }
+      
+      // If INSERT didn't return a row (conflict), fetch existing
+      const fetchResult = await client.query(existingQuery, [lowId, highId]);
+      await client.query('COMMIT');
+      return fetchResult.rows[0] || null;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
-    
-    // Insert new connection request
-    const query = `
-      INSERT INTO connections (requester_id, addressee_id, status)
-      VALUES ($1, $2, 'pending')
-      ON CONFLICT (requester_id, addressee_id) DO NOTHING
-      RETURNING *
-    `;
-    const result = await pool.query(query, [requesterId, addresseeId]);
-    return result.rows[0] || null;
   } catch (error) {
     console.error('Error creating connection request:', error.message);
     throw error;

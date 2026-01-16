@@ -36,6 +36,7 @@ const initializeReactionsTable = async () => {
 
 // Create reaction
 const create = async (reactionData) => {
+  const client = await pool.connect();
   try {
     const userId = reactionData.user_id;
     
@@ -48,6 +49,9 @@ const create = async (reactionData) => {
     const commentId = reactionData.comment_id || null;
     const reactionType = reactionData.reaction_type || 'like';
     
+    await client.query('BEGIN');
+    await client.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+    
     // Two-step upsert to handle NULL values properly
     // First try UPDATE
     let query, result;
@@ -59,7 +63,7 @@ const create = async (reactionData) => {
         WHERE user_id = $2 AND post_id = $3 AND comment_id IS NULL
         RETURNING *
       `;
-      result = await pool.query(query, [reactionType, userId, postId]);
+      result = await client.query(query, [reactionType, userId, postId]);
     } else if (commentId) {
       query = `
         UPDATE reactions
@@ -67,8 +71,9 @@ const create = async (reactionData) => {
         WHERE user_id = $2 AND comment_id = $3 AND post_id IS NULL
         RETURNING *
       `;
-      result = await pool.query(query, [reactionType, userId, commentId]);
+      result = await client.query(query, [reactionType, userId, commentId]);
     } else {
+      await client.query('ROLLBACK');
       throw new Error('Either post_id or comment_id must be provided');
     }
     
@@ -79,13 +84,17 @@ const create = async (reactionData) => {
         VALUES ($1, $2, $3, $4)
         RETURNING *
       `;
-      result = await pool.query(query, [userId, postId, commentId, reactionType]);
+      result = await client.query(query, [userId, postId, commentId, reactionType]);
     }
     
+    await client.query('COMMIT');
     return result.rows[0];
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Error creating reaction:', error.message);
     throw error;
+  } finally {
+    client.release();
   }
 };
 

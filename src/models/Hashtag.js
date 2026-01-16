@@ -26,16 +26,19 @@ const findOrCreate = async (name) => {
   try {
     const normalizedName = name.toLowerCase().trim().replace(/^#/, '');
     
-    let query = 'SELECT * FROM hashtags WHERE name = $1';
+    // Use atomic upsert to prevent race conditions
+    const query = `
+      INSERT INTO hashtags (name)
+      VALUES ($1)
+      ON CONFLICT (name) DO NOTHING
+      RETURNING *
+    `;
     let result = await pool.query(query, [normalizedName]);
     
+    // If INSERT didn't return a row (conflict), fetch existing
     if (result.rows.length === 0) {
-      query = `
-        INSERT INTO hashtags (name)
-        VALUES ($1)
-        RETURNING *
-      `;
-      result = await pool.query(query, [normalizedName]);
+      const selectQuery = 'SELECT * FROM hashtags WHERE name = $1';
+      result = await pool.query(selectQuery, [normalizedName]);
     }
     
     return result.rows[0];
@@ -73,13 +76,19 @@ const findByName = async (name) => {
 // Search hashtags
 const search = async (searchTerm, limit = 20) => {
   try {
+    // Escape SQL LIKE wildcards
+    const escapedTerm = searchTerm
+      .replace(/\\/g, '\\\\')
+      .replace(/%/g, '\\%')
+      .replace(/_/g, '\\_');
+    
     const query = `
       SELECT * FROM hashtags
-      WHERE name ILIKE $1
+      WHERE name ILIKE $1 ESCAPE '\\'
       ORDER BY posts_count DESC, name ASC
       LIMIT $2
     `;
-    const result = await pool.query(query, [`%${searchTerm}%`, limit]);
+    const result = await pool.query(query, [`%${escapedTerm}%`, limit]);
     return result.rows;
   } catch (error) {
     console.error('Error searching hashtags:', error.message);
