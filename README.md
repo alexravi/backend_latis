@@ -50,8 +50,11 @@ npm run dev
 
 - `PORT` - Server port (default: 3000)
 - `NODE_ENV` - Environment mode
+- `DATABASE_URL` - PostgreSQL connection string (or use individual DB variables below)
 - `DB_HOST` - PostgreSQL host
 - `DB_PORT` - PostgreSQL port (default: 5432)
 - `DB_NAME` - Database name
 - `DB_USER` - Database user
 - `DB_PASSWORD` - Database password
+- `JWT_SECRET` - Secret key for JWT token signing (required for authentication)
+- `JWT_EXPIRES_IN` - JWT token expiration time (default: "24h", e.g., "7d", "1h")

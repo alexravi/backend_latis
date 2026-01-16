@@ -2,6 +2,7 @@
 // This file imports the server and starts listening on the configured port
 require('dotenv').config();
 const { testConnection } = require('./config/database');
+const { initializeUsersTable } = require('./models/User');
 const app = require('./server');
 
 const PORT = process.env.PORT || 3000;
@@ -15,6 +16,14 @@ const startServer = async () => {
   if (dbStatus.success) {
     console.log('✅ Database connected successfully');
     console.log(`   Server time: ${dbStatus.timestamp}`);
+    
+    // Initialize database tables
+    try {
+      await initializeUsersTable();
+    } catch (error) {
+      console.log('⚠️  Warning: Could not initialize users table');
+      console.log(`   Error: ${error.message}\n`);
+    }
   } else {
     console.log('❌ Database connection failed');
     console.log(`   Error: ${dbStatus.error}`);
