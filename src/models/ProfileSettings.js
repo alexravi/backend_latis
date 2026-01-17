@@ -37,7 +37,7 @@ const initializeProfileSettingsTable = async () => {
 };
 
 // Create or update profile settings
-const upsert = async (userId, settings) => {
+const upsert = async (userId, settings, client = null) => {
   try {
     const allowedFields = [
       'profile_visibility', 'show_email', 'show_phone', 'show_location',
@@ -92,7 +92,8 @@ const upsert = async (userId, settings) => {
       RETURNING *
     `;
     
-    const result = await pool.query(query, values);
+    const db = client || pool;
+    const result = await db.query(query, values);
     return result.rows[0];
   } catch (error) {
     console.error('Error upserting profile settings:', error.message);

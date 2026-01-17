@@ -177,6 +177,63 @@ const remove = async (id) => {
   }
 };
 
+// Bulk create medical publications
+const bulkCreate = async (client, userId, publications) => {
+  if (!publications || publications.length === 0) {
+    return [];
+  }
+
+  try {
+    const values = [];
+    const placeholders = [];
+    let paramCount = 1;
+
+    publications.forEach((pub) => {
+      placeholders.push(
+        `($${paramCount}, $${paramCount + 1}, $${paramCount + 2}, $${paramCount + 3}, $${paramCount + 4}, $${paramCount + 5}, $${paramCount + 6}, $${paramCount + 7}, $${paramCount + 8}, $${paramCount + 9}, $${paramCount + 10}, $${paramCount + 11}, $${paramCount + 12}, $${paramCount + 13}, $${paramCount + 14}, $${paramCount + 15}, $${paramCount + 16}, $${paramCount + 17}, $${paramCount + 18})`
+      );
+      values.push(
+        userId,
+        pub.publication_type,
+        pub.title,
+        pub.authors || [],
+        pub.author_order || null,
+        pub.journal_name || null,
+        pub.publisher || null,
+        pub.publication_date || null,
+        pub.doi || null,
+        pub.url || null,
+        pub.abstract || null,
+        pub.keywords || [],
+        pub.impact_factor || null,
+        pub.citation_count || 0,
+        pub.is_peer_reviewed || false,
+        pub.volume || null,
+        pub.issue || null,
+        pub.pages || null,
+        pub.description || null
+      );
+      paramCount += 19;
+    });
+
+    const query = `
+      INSERT INTO medical_publications (
+        user_id, publication_type, title, authors, author_order, journal_name,
+        publisher, publication_date, doi, url, abstract, keywords, impact_factor,
+        citation_count, is_peer_reviewed, volume, issue, pages, description
+      )
+      VALUES ${placeholders.join(', ')}
+      RETURNING *
+    `;
+
+    const result = await client.query(query, values);
+    return result.rows;
+  } catch (error) {
+    console.error('Error bulk creating medical publications:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeMedicalPublicationsTable,
   create,
@@ -185,4 +242,5 @@ module.exports = {
   updateCitationCount,
   update,
   remove,
+  bulkCreate,
 };

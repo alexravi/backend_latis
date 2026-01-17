@@ -25,31 +25,79 @@ const initializeProfilesTable = async () => {
   }
 };
 
-// Create or update profile
-const upsertProfile = async (userId, profileData) => {
+// Create or update profile (only updates fields that are explicitly provided)
+const upsertProfile = async (userId, profileData, client = null) => {
   try {
-    const query = `
-      INSERT INTO profiles (user_id, bio, languages, interests, volunteer_experiences, causes)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      ON CONFLICT (user_id)
-      DO UPDATE SET
-        bio = EXCLUDED.bio,
-        languages = EXCLUDED.languages,
-        interests = EXCLUDED.interests,
-        volunteer_experiences = EXCLUDED.volunteer_experiences,
-        causes = EXCLUDED.causes,
-        updated_at = NOW()
-      RETURNING *
-    `;
-    const result = await pool.query(query, [
-      userId,
-      profileData.bio || null,
-      profileData.languages || [],
-      profileData.interests || [],
-      profileData.volunteer_experiences || null,
-      profileData.causes || []
-    ]);
-    return result.rows[0];
+    const db = client || pool;
+    
+    // First, check if profile exists to determine if we should INSERT or UPDATE
+    const existingProfile = await findByUserId(userId);
+    
+    if (!existingProfile) {
+      // INSERT new profile - use provided values or defaults
+      const query = `
+        INSERT INTO profiles (user_id, bio, languages, interests, volunteer_experiences, causes)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `;
+      const result = await db.query(query, [
+        userId,
+        profileData.bio ?? null,
+        profileData.languages ?? [],
+        profileData.interests ?? [],
+        profileData.volunteer_experiences ?? null,
+        profileData.causes ?? []
+      ]);
+      return result.rows[0];
+    } else {
+      // UPDATE existing profile - only update fields that are explicitly provided
+      const fields = [];
+      const values = [];
+      let paramCount = 1;
+      
+      if (profileData.bio !== undefined) {
+        fields.push(`bio = $${paramCount}`);
+        values.push(profileData.bio);
+        paramCount++;
+      }
+      if (profileData.languages !== undefined) {
+        fields.push(`languages = $${paramCount}`);
+        values.push(profileData.languages);
+        paramCount++;
+      }
+      if (profileData.interests !== undefined) {
+        fields.push(`interests = $${paramCount}`);
+        values.push(profileData.interests);
+        paramCount++;
+      }
+      if (profileData.volunteer_experiences !== undefined) {
+        fields.push(`volunteer_experiences = $${paramCount}`);
+        values.push(profileData.volunteer_experiences);
+        paramCount++;
+      }
+      if (profileData.causes !== undefined) {
+        fields.push(`causes = $${paramCount}`);
+        values.push(profileData.causes);
+        paramCount++;
+      }
+      
+      // Only update if there are fields to update
+      if (fields.length > 0) {
+        fields.push(`updated_at = NOW()`);
+        values.push(userId);
+        
+        const query = `
+          UPDATE profiles
+          SET ${fields.join(', ')}
+          WHERE user_id = $${paramCount}
+          RETURNING *
+        `;
+        const result = await db.query(query, values);
+        return result.rows[0];
+      }
+      
+      return existingProfile;
+    }
   } catch (error) {
     console.error('Error upserting profile:', error.message);
     throw error;

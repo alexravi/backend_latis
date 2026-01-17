@@ -99,10 +99,59 @@ const incrementEndorsements = async (userId, skillId) => {
   }
 };
 
+// Bulk upsert user skills
+// normalizedSkills should be array of {skill_id, proficiency_level, years_of_experience}
+const bulkUpsertUserSkills = async (client, userId, normalizedSkills) => {
+  if (!normalizedSkills || normalizedSkills.length === 0) {
+    return [];
+  }
+
+  try {
+    const values = [];
+    const placeholders = [];
+    let paramCount = 1;
+
+    normalizedSkills.forEach((skill) => {
+      if (!skill.skill_id) return; // Skip if no skill_id
+      
+      placeholders.push(
+        `($${paramCount}, $${paramCount + 1}, $${paramCount + 2}, $${paramCount + 3})`
+      );
+      values.push(
+        userId,
+        skill.skill_id,
+        skill.proficiency_level || null,
+        skill.years_of_experience || null
+      );
+      paramCount += 4;
+    });
+
+    if (placeholders.length === 0) {
+      return [];
+    }
+
+    const query = `
+      INSERT INTO user_skills (user_id, skill_id, proficiency_level, years_of_experience)
+      VALUES ${placeholders.join(', ')}
+      ON CONFLICT (user_id, skill_id) DO UPDATE SET
+        proficiency_level = EXCLUDED.proficiency_level,
+        years_of_experience = EXCLUDED.years_of_experience
+      RETURNING *
+    `;
+
+    const result = await client.query(query, values);
+    return result.rows;
+  } catch (error) {
+    console.error('Error bulk upserting user skills:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeUserSkillsTable,
   addSkill,
   findByUserId,
   removeSkill,
   incrementEndorsements,
+  bulkUpsertUserSkills,
 };

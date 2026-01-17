@@ -105,6 +105,65 @@ const search = async (searchTerm) => {
   }
 };
 
+// Bulk upsert skills (case-insensitive deduplication)
+const bulkUpsertSkills = async (client, skills) => {
+  if (!skills || skills.length === 0) {
+    return [];
+  }
+
+  try {
+    // Get unique skill names (case-insensitive deduplication already done in normalization)
+    const uniqueNames = [...new Set(skills.map(s => s.name.toLowerCase()))];
+    
+    // Fetch existing skills in bulk (case-insensitive)
+    const findPlaceholders = uniqueNames.map((_, i) => `$${i + 1}`).join(',');
+    const findQuery = `
+      SELECT * FROM medical_skills 
+      WHERE LOWER(name) IN (${findPlaceholders})
+    `;
+    const findResult = await client.query(findQuery, uniqueNames);
+    
+    const existingMap = new Map();
+    findResult.rows.forEach(row => {
+      existingMap.set(row.name.toLowerCase(), row);
+    });
+
+    // Separate new skills from existing ones
+    const newSkills = skills.filter(skill => !existingMap.has(skill.name.toLowerCase()));
+    const skillMap = new Map(existingMap);
+
+    // Bulk insert new skills
+    if (newSkills.length > 0) {
+      const insertValues = [];
+      const insertPlaceholders = [];
+      let insertParamCount = 1;
+
+      newSkills.forEach((skill) => {
+        insertPlaceholders.push(`($${insertParamCount}, $${insertParamCount + 1}, $${insertParamCount + 2})`);
+        insertValues.push(skill.name, skill.category || null, null);
+        insertParamCount += 3;
+      });
+
+      const insertQuery = `
+        INSERT INTO medical_skills (name, category, description)
+        VALUES ${insertPlaceholders.join(', ')}
+        RETURNING *
+      `;
+      
+      const insertResult = await client.query(insertQuery, insertValues);
+      insertResult.rows.forEach(row => {
+        skillMap.set(row.name.toLowerCase(), row);
+      });
+    }
+
+    // Return all skills (existing + newly created) in the order requested
+    return skills.map(skill => skillMap.get(skill.name.toLowerCase())).filter(Boolean);
+  } catch (error) {
+    console.error('Error bulk upserting skills:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeMedicalSkillsTable,
   create,
@@ -112,4 +171,5 @@ module.exports = {
   findByName,
   findAll,
   search,
+  bulkUpsertSkills,
 };
