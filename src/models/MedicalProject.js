@@ -154,6 +154,60 @@ const remove = async (id) => {
   }
 };
 
+// Bulk create medical projects
+const bulkCreate = async (client, userId, projects) => {
+  if (!projects || projects.length === 0) {
+    return [];
+  }
+
+  try {
+    const values = [];
+    const placeholders = [];
+    let paramCount = 1;
+
+    projects.forEach((proj) => {
+      placeholders.push(
+        `($${paramCount}, $${paramCount + 1}, $${paramCount + 2}, $${paramCount + 3}, $${paramCount + 4}, $${paramCount + 5}, $${paramCount + 6}, $${paramCount + 7}, $${paramCount + 8}, $${paramCount + 9}, $${paramCount + 10}, $${paramCount + 11}, $${paramCount + 12}, $${paramCount + 13}, $${paramCount + 14}, $${paramCount + 15})`
+      );
+      values.push(
+        userId,
+        proj.organization_id || null,
+        proj.title,
+        proj.project_type,
+        proj.description || null,
+        proj.start_date || null,
+        proj.end_date || null,
+        proj.is_current || false,
+        proj.role || null,
+        proj.responsibilities || null,
+        proj.outcomes || null,
+        proj.technologies_used || [],
+        proj.collaborators || [],
+        proj.funding_source || null,
+        proj.grant_number || null,
+        proj.url || null
+      );
+      paramCount += 16;
+    });
+
+    const query = `
+      INSERT INTO medical_projects (
+        user_id, organization_id, title, project_type, description, start_date,
+        end_date, is_current, role, responsibilities, outcomes, technologies_used,
+        collaborators, funding_source, grant_number, url
+      )
+      VALUES ${placeholders.join(', ')}
+      RETURNING *
+    `;
+
+    const result = await client.query(query, values);
+    return result.rows;
+  } catch (error) {
+    console.error('Error bulk creating medical projects:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeMedicalProjectsTable,
   create,
@@ -161,4 +215,5 @@ module.exports = {
   findById,
   update,
   remove,
+  bulkCreate,
 };

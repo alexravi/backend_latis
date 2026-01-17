@@ -160,6 +160,63 @@ const remove = async (id) => {
   }
 };
 
+// Bulk create medical education
+const bulkCreate = async (client, userId, education) => {
+  if (!education || education.length === 0) {
+    return [];
+  }
+
+  try {
+    const values = [];
+    const placeholders = [];
+    let paramCount = 1;
+
+    education.forEach((edu) => {
+      placeholders.push(
+        `($${paramCount}, $${paramCount + 1}, $${paramCount + 2}, $${paramCount + 3}, $${paramCount + 4}, $${paramCount + 5}, $${paramCount + 6}, $${paramCount + 7}, $${paramCount + 8}, $${paramCount + 9}, $${paramCount + 10}, $${paramCount + 11}, $${paramCount + 12}, $${paramCount + 13}, $${paramCount + 14}, $${paramCount + 15}, $${paramCount + 16}, $${paramCount + 17})`
+      );
+      values.push(
+        userId,
+        edu.organization_id || null,
+        edu.degree_type,
+        edu.field_of_study || null,
+        edu.institution_name,
+        edu.institution_type || null,
+        edu.location || null,
+        edu.program_name || null,
+        edu.specialty || null,
+        edu.subspecialty || null,
+        edu.start_date || null,
+        edu.end_date || null,
+        edu.graduation_date || null,
+        edu.gpa || null,
+        edu.honors || [],
+        edu.recognition || null,
+        edu.description || null,
+        edu.is_current || false
+      );
+      paramCount += 18;
+    });
+
+    const query = `
+      INSERT INTO medical_education (
+        user_id, organization_id, degree_type, field_of_study, institution_name,
+        institution_type, location, program_name, specialty, subspecialty,
+        start_date, end_date, graduation_date, gpa, honors, recognition,
+        description, is_current
+      )
+      VALUES ${placeholders.join(', ')}
+      RETURNING *
+    `;
+
+    const result = await client.query(query, values);
+    return result.rows;
+  } catch (error) {
+    console.error('Error bulk creating medical education:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeMedicalEducationTable,
   create,
@@ -167,4 +224,5 @@ module.exports = {
   findById,
   update,
   remove,
+  bulkCreate,
 };

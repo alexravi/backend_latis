@@ -1,6 +1,7 @@
 // Authentication routes
 const express = require('express');
 const router = express.Router();
+const { authenticateToken } = require('../middleware/authMiddleware');
 const {
   signUp,
   signIn,
@@ -95,6 +96,8 @@ router.post('/signin', validateSignIn, signIn);
  *   post:
  *     summary: Logout user
  *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
  *     responses:
  *       200:
  *         description: User successfully logged out
@@ -109,6 +112,12 @@ router.post('/signin', validateSignIn, signIn);
  *                 message:
  *                   type: string
  *                   example: Logged out successfully
+ *       401:
+ *         description: Unauthorized - Access token is required or invalid
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
  *       500:
  *         description: Internal server error
  *         content:
@@ -116,6 +125,6 @@ router.post('/signin', validateSignIn, signIn);
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-router.post('/logout', logout);
+router.post('/logout', authenticateToken, logout);
 
 module.exports = router;

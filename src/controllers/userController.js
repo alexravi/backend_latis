@@ -1,5 +1,6 @@
 // User controller - Profile management
 const { body, validationResult } = require('express-validator');
+const { withTransaction } = require('../config/database');
 const User = require('../models/User');
 const Profile = require('../models/Profile');
 const ProfileSettings = require('../models/ProfileSettings');
@@ -11,6 +12,9 @@ const MedicalCertification = require('../models/MedicalCertification');
 const MedicalPublication = require('../models/MedicalPublication');
 const MedicalProject = require('../models/MedicalProject');
 const Award = require('../models/Award');
+const { normalizeSkills } = require('../utils/skillUtils');
+const { validateProfileData } = require('../utils/profileValidation');
+const { deriveProfileFields } = require('../utils/profileDerivation');
 
 // Validation rules for profile update
 const validateProfileUpdate = [
@@ -367,141 +371,216 @@ const getCompleteProfile = async (req, res) => {
 
 // Create complete profile (unified endpoint for all fields - initial creation)
 const createCompleteProfile = async (req, res) => {
+  const startTime = Date.now();
+  const timestamp = new Date().toISOString();
+  
   try {
     const userId = req.user.id;
+    console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Request received - UserId: ${userId}`);
 
-    // Check if profile already has data
-    const existingUser = await User.findById(userId);
-    const existingExperiences = await MedicalExperience.findByUserId(userId);
-    const existingEducation = await MedicalEducation.findByUserId(userId);
-
-    if (existingUser.first_name || existingUser.last_name || existingExperiences.length > 0 || existingEducation.length > 0) {
-      return res.status(409).json({
+    // Layer 1 & 2: Validation (shape and business rules)
+    const validationErrors = validateProfileData(req.body);
+    if (validationErrors.length > 0) {
+      const duration = Date.now() - startTime;
+      console.warn(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Validation failed - UserId: ${userId}, Errors: ${validationErrors.length}, Duration: ${duration}ms`);
+      return res.status(400).json({
         success: false,
-        message: 'Profile already exists. Use PUT /api/users/me/profile/complete to update.',
+        errors: validationErrors,
       });
     }
 
-    // Use the same logic as update, but for creation
+    // Check if profile already has substantial data (to prevent overwriting complete profiles)
+    // Allow partial profiles to be extended via POST
+    console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Checking existing profile - UserId: ${userId}`);
+    const existingUser = await User.findById(userId);
+    const existingExperiences = await MedicalExperience.findByUserId(userId);
+    const existingEducation = await MedicalEducation.findByUserId(userId);
+    const existingSkills = await UserSkill.findByUserId(userId);
+    const existingCerts = await MedicalCertification.findByUserId(userId);
+
+    // Only block if profile appears complete (has both user data AND professional data)
+    const hasUserData = existingUser.first_name || existingUser.last_name;
+    const hasProfessionalData = existingExperiences.length > 0 || existingEducation.length > 0 || existingSkills.length > 0 || existingCerts.length > 0;
+    
+    if (hasUserData && hasProfessionalData) {
+      const duration = Date.now() - startTime;
+      console.warn(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Profile already exists and appears complete - UserId: ${userId}, Duration: ${duration}ms`);
+      return res.status(409).json({
+        success: false,
+        message: 'Profile already exists with substantial data. Use PUT /api/users/me/profile/complete to update your profile.',
+        hint: 'If you want to add more details to an existing profile, use the PUT endpoint instead of POST.',
+      });
+    }
+    
+    if (hasUserData || hasProfessionalData) {
+      console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Profile exists but is incomplete, allowing extension - UserId: ${userId}, HasUserData: ${hasUserData}, HasProfessionalData: ${hasProfessionalData}`);
+    }
+
     const { user: userData, profile: profileData, experiences, education, skills, certifications, publications, projects, awards } = req.body;
+    console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Starting transaction - UserId: ${userId}, Data: user=${!!userData}, profile=${!!profileData}, experiences=${experiences?.length || 0}, education=${education?.length || 0}, skills=${skills?.length || 0}, certifications=${certifications?.length || 0}, publications=${publications?.length || 0}, projects=${projects?.length || 0}, awards=${awards?.length || 0}`);
 
-    // Update user profile
-    if (userData) {
-      await User.updateProfile(userId, userData);
-    }
+    // Remove derived fields from userData if provided (they will be computed)
+    const fieldsToDerive = ['current_role', 'years_of_experience', 'medical_school_graduation_year', 'residency_completion_year', 'fellowship_completion_year'];
+    const cleanUserData = userData ? { ...userData } : {};
+    fieldsToDerive.forEach(field => {
+      delete cleanUserData[field];
+    });
 
-    // Update extended profile
-    if (profileData) {
-      await Profile.upsertProfile(userId, profileData);
-    }
-
-    // Initialize default profile settings
-    await ProfileSettings.upsert(userId, {});
-
-    // Handle experiences
-    if (Array.isArray(experiences)) {
-      for (const exp of experiences) {
-        await MedicalExperience.create({ ...exp, user_id: userId });
+    // Execute all operations within a transaction
+    const result = await withTransaction(async (client) => {
+      // Update user profile (without derived fields)
+      if (Object.keys(cleanUserData).length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Updating user profile - UserId: ${userId}, Fields: ${Object.keys(cleanUserData).join(', ')}`);
+        await User.updateProfile(userId, cleanUserData, client);
       }
-    }
 
-    // Handle education
-    if (Array.isArray(education)) {
-      for (const edu of education) {
-        await MedicalEducation.create({ ...edu, user_id: userId });
+      // Bulk create experiences
+      let createdExperiences = [];
+      if (Array.isArray(experiences) && experiences.length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Creating ${experiences.length} experiences - UserId: ${userId}`);
+        createdExperiences = await MedicalExperience.bulkCreate(client, userId, experiences);
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Created ${createdExperiences.length} experiences - UserId: ${userId}`);
       }
-    }
 
-    // Handle skills
-    if (Array.isArray(skills)) {
-      for (const skill of skills) {
-        let skillId;
-        if (typeof skill === 'number') {
-          skillId = skill;
-        } else if (typeof skill === 'string') {
-          let skillRecord = await MedicalSkill.findByName(skill);
-          if (!skillRecord) {
-            skillRecord = await MedicalSkill.create({ name: skill });
+      // Bulk create education
+      let createdEducation = [];
+      if (Array.isArray(education) && education.length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Creating ${education.length} education records - UserId: ${userId}`);
+        createdEducation = await MedicalEducation.bulkCreate(client, userId, education);
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Created ${createdEducation.length} education records - UserId: ${userId}`);
+      }
+
+      // Derive fields from experiences and education
+      const derivedFields = deriveProfileFields(createdExperiences, createdEducation);
+      console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Derived fields - UserId: ${userId}, Fields: ${JSON.stringify(derivedFields)}`);
+      
+      // Update user with derived fields (only if we have values)
+      const fieldsToUpdate = {};
+      if (derivedFields.current_role) fieldsToUpdate.current_role = derivedFields.current_role;
+      if (derivedFields.years_of_experience !== null && derivedFields.years_of_experience !== undefined) {
+        fieldsToUpdate.years_of_experience = derivedFields.years_of_experience;
+      }
+      if (derivedFields.medical_school_graduation_year) {
+        fieldsToUpdate.medical_school_graduation_year = derivedFields.medical_school_graduation_year;
+      }
+      if (derivedFields.residency_completion_year) {
+        fieldsToUpdate.residency_completion_year = derivedFields.residency_completion_year;
+      }
+      if (derivedFields.fellowship_completion_year) {
+        fieldsToUpdate.fellowship_completion_year = derivedFields.fellowship_completion_year;
+      }
+
+      if (Object.keys(fieldsToUpdate).length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Updating derived fields - UserId: ${userId}, Fields: ${Object.keys(fieldsToUpdate).join(', ')}`);
+        await User.updateProfile(userId, fieldsToUpdate, client);
+      }
+
+      // Update extended profile
+      let profile = null;
+      if (profileData) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Upserting extended profile - UserId: ${userId}`);
+        profile = await Profile.upsertProfile(userId, profileData, client);
+      }
+
+      // Initialize default profile settings
+      console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Initializing profile settings - UserId: ${userId}`);
+      await ProfileSettings.upsert(userId, {}, client);
+
+      // Handle skills with bulk operations
+      if (Array.isArray(skills) && skills.length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Processing ${skills.length} skills - UserId: ${userId}`);
+        // Normalize skills
+        const normalizedSkills = normalizeSkills(skills);
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Normalized to ${normalizedSkills.length} unique skills - UserId: ${userId}`);
+        
+        // Bulk upsert skills into medical_skills
+        const createdSkills = await MedicalSkill.bulkUpsertSkills(client, normalizedSkills);
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Upserted ${createdSkills.length} skills to medical_skills - UserId: ${userId}`);
+        
+        // Map normalized skills to include skill_id
+        const skillsWithIds = normalizedSkills.map(normalized => {
+          const created = createdSkills.find(s => s.name.toLowerCase() === normalized.name.toLowerCase());
+          if (!created) {
+            // Skip skills that couldn't be matched or created
+            // This should be rare but can happen if there's a race condition or case mismatch
+            console.warn(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Skill "${normalized.name}" not found in createdSkills, skipping - UserId: ${userId}`);
+            return null;
           }
-          skillId = skillRecord.id;
-        } else if (skill.id) {
-          skillId = skill.id;
-        } else if (skill.name) {
-          let skillRecord = await MedicalSkill.findByName(skill.name);
-          if (!skillRecord) {
-            skillRecord = await MedicalSkill.create(skill);
-          }
-          skillId = skillRecord.id;
-        }
+          return {
+            skill_id: created.id,
+            proficiency_level: normalized.proficiency_level,
+            years_of_experience: normalized.years_of_experience,
+          };
+        }).filter(Boolean); // Remove null entries
 
-        if (skillId) {
-          await UserSkill.addSkill(userId, skillId, skill);
+        // Bulk upsert user_skills
+        if (skillsWithIds.length > 0) {
+          console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Upserting ${skillsWithIds.length} user skills - UserId: ${userId}`);
+          await UserSkill.bulkUpsertUserSkills(client, userId, skillsWithIds);
         }
       }
-    }
 
-    // Handle certifications
-    if (Array.isArray(certifications)) {
-      for (const cert of certifications) {
-        await MedicalCertification.create({ ...cert, user_id: userId });
+      // Bulk create certifications
+      if (Array.isArray(certifications) && certifications.length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Creating ${certifications.length} certifications - UserId: ${userId}`);
+        await MedicalCertification.bulkCreate(client, userId, certifications);
       }
-    }
 
-    // Handle publications
-    if (Array.isArray(publications)) {
-      for (const pub of publications) {
-        await MedicalPublication.create({ ...pub, user_id: userId });
+      // Bulk create publications
+      if (Array.isArray(publications) && publications.length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Creating ${publications.length} publications - UserId: ${userId}`);
+        await MedicalPublication.bulkCreate(client, userId, publications);
       }
-    }
 
-    // Handle projects
-    if (Array.isArray(projects)) {
-      for (const proj of projects) {
-        await MedicalProject.create({ ...proj, user_id: userId });
+      // Bulk create projects
+      if (Array.isArray(projects) && projects.length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Creating ${projects.length} projects - UserId: ${userId}`);
+        await MedicalProject.bulkCreate(client, userId, projects);
       }
-    }
 
-    // Handle awards
-    if (Array.isArray(awards)) {
-      for (const award of awards) {
-        await Award.create({ ...award, user_id: userId });
+      // Bulk create awards
+      if (Array.isArray(awards) && awards.length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Creating ${awards.length} awards - UserId: ${userId}`);
+        await Award.bulkCreate(client, userId, awards);
       }
-    }
 
-    // Return complete created profile
-    const updatedUser = await User.findById(userId);
-    const profile = await Profile.findByUserId(userId);
-    const [createdExperiences, createdEducation, createdSkills, createdCerts, createdPubs, createdProjects, createdAwards] = await Promise.all([
-      MedicalExperience.findByUserId(userId),
-      MedicalEducation.findByUserId(userId),
-      UserSkill.findByUserId(userId),
-      MedicalCertification.findByUserId(userId),
-      MedicalPublication.findByUserId(userId),
-      MedicalProject.findByUserId(userId),
-      Award.findByUserId(userId),
-    ]);
+      // Get profile_id if profile was created
+      const createdProfile = await Profile.findByUserId(userId);
+      const profileId = createdProfile ? createdProfile.id : null;
 
-    const { password, ...userWithoutPassword } = updatedUser;
+      // Calculate basic completion percentage (simplified - can be enhanced later)
+      let completionScore = 0;
+      if (userData) completionScore += 20;
+      if (profileData) completionScore += 10;
+      if (experiences?.length > 0) completionScore += 15;
+      if (education?.length > 0) completionScore += 15;
+      if (skills?.length > 0) completionScore += 15;
+      if (certifications?.length > 0) completionScore += 10;
+      if (publications?.length > 0) completionScore += 5;
+      if (projects?.length > 0) completionScore += 5;
+      if (awards?.length > 0) completionScore += 5;
 
+      return {
+        profile_id: profileId,
+        completion_percentage: completionScore,
+      };
+    });
+
+    const duration = Date.now() - startTime;
+    console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Success - UserId: ${userId}, ProfileId: ${result.profile_id}, Completion: ${result.completion_percentage}%, Duration: ${duration}ms`);
+
+    // Return minimal response
     res.status(201).json({
       success: true,
-      message: 'Complete profile created successfully',
-      data: {
-        user: userWithoutPassword,
-        profile: profile || null,
-        professional: {
-          experiences: createdExperiences || [],
-          education: createdEducation || [],
-          skills: createdSkills || [],
-          certifications: createdCerts || [],
-          publications: createdPubs || [],
-          projects: createdProjects || [],
-          awards: createdAwards || [],
-        },
-      },
+      profile_id: result.profile_id,
+      user_id: userId,
+      completion_percentage: result.completion_percentage,
     });
   } catch (error) {
-    console.error('Create complete profile error:', error.message);
+    const duration = Date.now() - startTime;
+    console.error(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Error - UserId: ${req.user?.id || 'N/A'}, Error: ${error.message}, Stack: ${error.stack}, Duration: ${duration}ms`);
+    
+    // Don't expose internal errors
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -511,22 +590,31 @@ const createCompleteProfile = async (req, res) => {
 
 // Update complete profile (unified endpoint for all fields)
 const updateCompleteProfile = async (req, res) => {
+  const startTime = Date.now();
+  const timestamp = new Date().toISOString();
+  
   try {
     const userId = req.user.id;
+    console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Request received - UserId: ${userId}`);
+    
     const { user: userData, profile: profileData, experiences, education, skills, certifications, publications, projects, awards } = req.body;
+    console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Update data - UserId: ${userId}, Data: user=${!!userData}, profile=${!!profileData}, experiences=${experiences?.length || 0}, education=${education?.length || 0}, skills=${skills?.length || 0}, certifications=${certifications?.length || 0}, publications=${publications?.length || 0}, projects=${projects?.length || 0}, awards=${awards?.length || 0}`);
 
     // Update user profile
     if (userData) {
+      console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Updating user profile - UserId: ${userId}, Fields: ${Object.keys(userData).join(', ')}`);
       await User.updateProfile(userId, userData);
     }
 
     // Update extended profile
     if (profileData) {
+      console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Upserting extended profile - UserId: ${userId}`);
       await Profile.upsertProfile(userId, profileData);
     }
 
     // Handle experiences
     if (Array.isArray(experiences)) {
+      console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Processing ${experiences.length} experiences - UserId: ${userId}`);
       const existingExperiences = await MedicalExperience.findByUserId(userId);
       const existingIds = new Set(existingExperiences.map(e => e.id));
       const incomingIds = experiences.filter(e => e.id).map(e => e.id);
@@ -549,26 +637,37 @@ const updateCompleteProfile = async (req, res) => {
       const toDelete = existingExperiences
         .filter(e => !incomingIds.includes(e.id))
         .map(e => e.id);
-      for (const id of toDelete) {
-        await MedicalExperience.remove(id);
+      if (toDelete.length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Deleting ${toDelete.length} experiences - UserId: ${userId}`);
+        for (const id of toDelete) {
+          await MedicalExperience.remove(id);
+        }
       }
 
       // Create or update experiences
+      let createdCount = 0;
+      let updatedCount = 0;
       for (const exp of experiences) {
         if (exp.id && existingIds.has(exp.id)) {
           // Verify ownership before update
           const record = await MedicalExperience.findById(exp.id);
           if (record && record.user_id === userId) {
             await MedicalExperience.update(exp.id, { ...exp, user_id: userId });
+            updatedCount++;
           }
         } else {
           await MedicalExperience.create({ ...exp, user_id: userId });
+          createdCount++;
         }
+      }
+      if (createdCount > 0 || updatedCount > 0) {
+        console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Experiences updated - UserId: ${userId}, Created: ${createdCount}, Updated: ${updatedCount}`);
       }
     }
 
     // Handle education
     if (Array.isArray(education)) {
+      console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Processing ${education.length} education records - UserId: ${userId}`);
       const existingEducation = await MedicalEducation.findByUserId(userId);
       const existingIds = new Set(existingEducation.map(e => e.id));
       const incomingIds = education.filter(e => e.id).map(e => e.id);
@@ -590,27 +689,39 @@ const updateCompleteProfile = async (req, res) => {
       const toDelete = existingEducation
         .filter(e => !incomingIds.includes(e.id))
         .map(e => e.id);
-      for (const id of toDelete) {
-        await MedicalEducation.remove(id);
+      if (toDelete.length > 0) {
+        console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Deleting ${toDelete.length} education records - UserId: ${userId}`);
+        for (const id of toDelete) {
+          await MedicalEducation.remove(id);
+        }
       }
 
       // Create or update education
+      let createdCount = 0;
+      let updatedCount = 0;
       for (const edu of education) {
         if (edu.id && existingIds.has(edu.id)) {
           const record = await MedicalEducation.findById(edu.id);
           if (record && record.user_id === userId) {
             await MedicalEducation.update(edu.id, { ...edu, user_id: userId });
+            updatedCount++;
           }
         } else {
           await MedicalEducation.create({ ...edu, user_id: userId });
+          createdCount++;
         }
+      }
+      if (createdCount > 0 || updatedCount > 0) {
+        console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Education updated - UserId: ${userId}, Created: ${createdCount}, Updated: ${updatedCount}`);
       }
     }
 
     // Handle skills
     if (Array.isArray(skills)) {
+      console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Processing ${skills.length} skills - UserId: ${userId}`);
       const existingSkills = await UserSkill.findByUserId(userId);
       const existingSkillIds = existingSkills.map(s => s.skill_id);
+      console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Removing ${existingSkills.length} existing skills - UserId: ${userId}`);
 
       // Remove all existing skills
       for (const userSkill of existingSkills) {
@@ -806,6 +917,7 @@ const updateCompleteProfile = async (req, res) => {
     }
 
     // Return complete updated profile
+    console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Fetching updated profile data - UserId: ${userId}`);
     const updatedUser = await User.findById(userId);
     const profile = await Profile.findByUserId(userId);
     const [updatedExperiences, updatedEducation, updatedSkills, updatedCerts, updatedPubs, updatedProjects, updatedAwards] = await Promise.all([
@@ -819,6 +931,9 @@ const updateCompleteProfile = async (req, res) => {
     ]);
 
     const { password, ...userWithoutPassword } = updatedUser;
+
+    const duration = Date.now() - startTime;
+    console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Success - UserId: ${userId}, Data: experiences=${updatedExperiences?.length || 0}, education=${updatedEducation?.length || 0}, skills=${updatedSkills?.length || 0}, certifications=${updatedCerts?.length || 0}, publications=${updatedPubs?.length || 0}, projects=${updatedProjects?.length || 0}, awards=${updatedAwards?.length || 0}, Duration: ${duration}ms`);
 
     res.status(200).json({
       success: true,
@@ -838,7 +953,8 @@ const updateCompleteProfile = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Update complete profile error:', error.message);
+    const duration = Date.now() - startTime;
+    console.error(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Error - UserId: ${req.user?.id || 'N/A'}, Error: ${error.message}, Stack: ${error.stack}, Duration: ${duration}ms`);
     res.status(500).json({
       success: false,
       message: 'Internal server error',

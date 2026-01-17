@@ -155,6 +155,60 @@ const remove = async (id) => {
   }
 };
 
+// Bulk create medical experiences
+const bulkCreate = async (client, userId, experiences) => {
+  if (!experiences || experiences.length === 0) {
+    return [];
+  }
+
+  try {
+    const values = [];
+    const placeholders = [];
+    let paramCount = 1;
+
+    experiences.forEach((exp, index) => {
+      placeholders.push(
+        `($${paramCount}, $${paramCount + 1}, $${paramCount + 2}, $${paramCount + 3}, $${paramCount + 4}, $${paramCount + 5}, $${paramCount + 6}, $${paramCount + 7}, $${paramCount + 8}, $${paramCount + 9}, $${paramCount + 10}, $${paramCount + 11}, $${paramCount + 12}, $${paramCount + 13}, $${paramCount + 14}, $${paramCount + 15})`
+      );
+      values.push(
+        userId,
+        exp.organization_id || null,
+        exp.title,
+        exp.position_type,
+        exp.department || null,
+        exp.specialty || null,
+        exp.subspecialty || null,
+        exp.institution_name,
+        exp.institution_type || null,
+        exp.location || null,
+        exp.description || null,
+        exp.start_date,
+        exp.end_date || null,
+        exp.is_current || false,
+        exp.patient_care_responsibilities || null,
+        exp.research_focus_areas || []
+      );
+      paramCount += 16;
+    });
+
+    const query = `
+      INSERT INTO medical_experiences (
+        user_id, organization_id, title, position_type, department, specialty,
+        subspecialty, institution_name, institution_type, location, description,
+        start_date, end_date, is_current, patient_care_responsibilities, research_focus_areas
+      )
+      VALUES ${placeholders.join(', ')}
+      RETURNING *
+    `;
+
+    const result = await client.query(query, values);
+    return result.rows;
+  } catch (error) {
+    console.error('Error bulk creating medical experiences:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeMedicalExperiencesTable,
   create,
@@ -162,4 +216,5 @@ module.exports = {
   findById,
   update,
   remove,
+  bulkCreate,
 };

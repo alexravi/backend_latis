@@ -179,6 +179,56 @@ const remove = async (id) => {
   }
 };
 
+// Bulk create medical certifications
+const bulkCreate = async (client, userId, certifications) => {
+  if (!certifications || certifications.length === 0) {
+    return [];
+  }
+
+  try {
+    const values = [];
+    const placeholders = [];
+    let paramCount = 1;
+
+    certifications.forEach((cert) => {
+      placeholders.push(
+        `($${paramCount}, $${paramCount + 1}, $${paramCount + 2}, $${paramCount + 3}, $${paramCount + 4}, $${paramCount + 5}, $${paramCount + 6}, $${paramCount + 7}, $${paramCount + 8}, $${paramCount + 9}, $${paramCount + 10}, $${paramCount + 11})`
+      );
+      values.push(
+        userId,
+        cert.certification_type,
+        cert.name,
+        cert.issuing_organization,
+        cert.certification_board || null,
+        cert.license_number || null,
+        cert.credential_id || null,
+        cert.issue_date || null,
+        cert.expiration_date || null,
+        cert.status || 'Active',
+        cert.verification_url || null,
+        cert.description || null
+      );
+      paramCount += 12;
+    });
+
+    const query = `
+      INSERT INTO medical_certifications (
+        user_id, certification_type, name, issuing_organization, certification_board,
+        license_number, credential_id, issue_date, expiration_date, status,
+        verification_url, description
+      )
+      VALUES ${placeholders.join(', ')}
+      RETURNING *
+    `;
+
+    const result = await client.query(query, values);
+    return result.rows;
+  } catch (error) {
+    console.error('Error bulk creating medical certifications:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeMedicalCertificationsTable,
   create,
@@ -187,4 +237,5 @@ module.exports = {
   findExpiring,
   update,
   remove,
+  bulkCreate,
 };

@@ -1,5 +1,7 @@
-// Reaction model - Likes, reactions on posts and comments
+// Reaction model - Upvotes and downvotes on posts and comments (Reddit-style)
 const { pool } = require('../config/database');
+const Post = require('./Post');
+const Comment = require('./Comment');
 
 // Initialize reactions table
 const initializeReactionsTable = async () => {
@@ -10,12 +12,13 @@ const initializeReactionsTable = async () => {
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
         comment_id INTEGER REFERENCES comments(id) ON DELETE CASCADE,
-        reaction_type VARCHAR(50) DEFAULT 'like',
+        reaction_type VARCHAR(50) DEFAULT 'upvote',
         created_at TIMESTAMP DEFAULT NOW(),
         CHECK (
           (post_id IS NOT NULL AND comment_id IS NULL) OR
           (post_id IS NULL AND comment_id IS NOT NULL)
-        )
+        ),
+        CHECK (reaction_type IN ('upvote', 'downvote'))
       );
       
       CREATE UNIQUE INDEX IF NOT EXISTS reactions_user_post_unique 
@@ -34,7 +37,7 @@ const initializeReactionsTable = async () => {
   }
 };
 
-// Create reaction
+// Create or update reaction (handle vote toggling)
 const create = async (reactionData) => {
   const client = await pool.connect();
   try {
@@ -47,48 +50,110 @@ const create = async (reactionData) => {
     
     const postId = reactionData.post_id || null;
     const commentId = reactionData.comment_id || null;
-    const reactionType = reactionData.reaction_type || 'like';
+    let reactionType = reactionData.reaction_type || 'upvote';
+    
+    // Validate reaction type
+    if (reactionType !== 'upvote' && reactionType !== 'downvote') {
+      throw new Error('reaction_type must be either "upvote" or "downvote"');
+    }
     
     await client.query('BEGIN');
     await client.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
     
-    // Two-step upsert to handle NULL values properly
-    // First try UPDATE
-    let query, result;
-    
+    // Find existing reaction
+    let existingQuery, existingResult;
     if (postId) {
-      query = `
-        UPDATE reactions
-        SET reaction_type = $1
-        WHERE user_id = $2 AND post_id = $3 AND comment_id IS NULL
-        RETURNING *
+      existingQuery = `
+        SELECT * FROM reactions
+        WHERE user_id = $1 AND post_id = $2 AND comment_id IS NULL
       `;
-      result = await client.query(query, [reactionType, userId, postId]);
+      existingResult = await client.query(existingQuery, [userId, postId]);
     } else if (commentId) {
-      query = `
-        UPDATE reactions
-        SET reaction_type = $1
-        WHERE user_id = $2 AND comment_id = $3 AND post_id IS NULL
-        RETURNING *
+      existingQuery = `
+        SELECT * FROM reactions
+        WHERE user_id = $1 AND comment_id = $2 AND post_id IS NULL
       `;
-      result = await client.query(query, [reactionType, userId, commentId]);
+      existingResult = await client.query(existingQuery, [userId, commentId]);
     } else {
       await client.query('ROLLBACK');
       throw new Error('Either post_id or comment_id must be provided');
     }
     
-    // If UPDATE didn't find a row, INSERT
-    if (result.rows.length === 0) {
-      query = `
+    const existingReaction = existingResult.rows[0];
+    
+    // Handle vote toggling logic
+    if (existingReaction) {
+      if (existingReaction.reaction_type === reactionType) {
+        // Same vote - remove it
+        await client.query('ROLLBACK');
+        return await remove(userId, postId, commentId);
+      } else {
+        // Different vote - toggle it
+        const updateQuery = `
+          UPDATE reactions
+          SET reaction_type = $1
+          WHERE id = $2
+          RETURNING *
+        `;
+        const updateResult = await client.query(updateQuery, [reactionType, existingReaction.id]);
+        
+        // Update vote counts using transaction client
+        if (postId) {
+          const oldType = existingReaction.reaction_type;
+          if (oldType === 'upvote') {
+            await Post.incrementUpvotes(postId, -1, client);
+          } else {
+            await Post.incrementDownvotes(postId, -1, client);
+          }
+          if (reactionType === 'upvote') {
+            await Post.incrementUpvotes(postId, 1, client);
+          } else {
+            await Post.incrementDownvotes(postId, 1, client);
+          }
+        } else if (commentId) {
+          const oldType = existingReaction.reaction_type;
+          if (oldType === 'upvote') {
+            await Comment.incrementUpvotes(commentId, -1, client);
+          } else {
+            await Comment.incrementDownvotes(commentId, -1, client);
+          }
+          if (reactionType === 'upvote') {
+            await Comment.incrementUpvotes(commentId, 1, client);
+          } else {
+            await Comment.incrementDownvotes(commentId, 1, client);
+          }
+        }
+        
+        await client.query('COMMIT');
+        return updateResult.rows[0];
+      }
+    } else {
+      // New reaction - insert it
+      const insertQuery = `
         INSERT INTO reactions (user_id, post_id, comment_id, reaction_type)
         VALUES ($1, $2, $3, $4)
         RETURNING *
       `;
-      result = await client.query(query, [userId, postId, commentId, reactionType]);
+      const insertResult = await client.query(insertQuery, [userId, postId, commentId, reactionType]);
+      
+      // Update vote counts using transaction client
+      if (postId) {
+        if (reactionType === 'upvote') {
+          await Post.incrementUpvotes(postId, 1, client);
+        } else {
+          await Post.incrementDownvotes(postId, 1, client);
+        }
+      } else if (commentId) {
+        if (reactionType === 'upvote') {
+          await Comment.incrementUpvotes(commentId, 1, client);
+        } else {
+          await Comment.incrementDownvotes(commentId, 1, client);
+        }
+      }
+      
+      await client.query('COMMIT');
+      return insertResult.rows[0];
     }
-    
-    await client.query('COMMIT');
-    return result.rows[0];
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error creating reaction:', error.message);
@@ -100,6 +165,7 @@ const create = async (reactionData) => {
 
 // Remove reaction
 const remove = async (userId, postId = null, commentId = null) => {
+  const client = await pool.connect();
   try {
     // Validate userId is present and not null/undefined
     if (userId === null || userId === undefined) {
@@ -111,23 +177,66 @@ const remove = async (userId, postId = null, commentId = null) => {
       throw new Error('Either postId or commentId must be provided');
     }
     
-    let query = 'DELETE FROM reactions WHERE user_id = $1';
+    await client.query('BEGIN');
+    
+    // Get the reaction first to know what type it was
+    let query = 'SELECT * FROM reactions WHERE user_id = $1';
     const params = [userId];
     
     if (postId) {
-      query += ' AND post_id = $2';
+      query += ' AND post_id = $2 AND comment_id IS NULL';
       params.push(postId);
     } else if (commentId) {
-      query += ' AND comment_id = $2';
+      query += ' AND comment_id = $2 AND post_id IS NULL';
       params.push(commentId);
     }
     
-    query += ' RETURNING *';
-    const result = await pool.query(query, params);
-    return result.rows[0] || null;
+    const selectResult = await client.query(query, params);
+    const reaction = selectResult.rows[0];
+    
+    if (!reaction) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    
+    // Delete the reaction
+    let deleteQuery = 'DELETE FROM reactions WHERE user_id = $1';
+    const deleteParams = [userId];
+    
+    if (postId) {
+      deleteQuery += ' AND post_id = $2 AND comment_id IS NULL';
+      deleteParams.push(postId);
+    } else if (commentId) {
+      deleteQuery += ' AND comment_id = $2 AND post_id IS NULL';
+      deleteParams.push(commentId);
+    }
+    
+    deleteQuery += ' RETURNING *';
+    const deleteResult = await client.query(deleteQuery, deleteParams);
+    
+    // Update vote counts using transaction client
+    if (reaction.reaction_type === 'upvote') {
+      if (postId) {
+        await Post.incrementUpvotes(postId, -1, client);
+      } else if (commentId) {
+        await Comment.incrementUpvotes(commentId, -1, client);
+      }
+    } else if (reaction.reaction_type === 'downvote') {
+      if (postId) {
+        await Post.incrementDownvotes(postId, -1, client);
+      } else if (commentId) {
+        await Comment.incrementDownvotes(commentId, -1, client);
+      }
+    }
+    
+    await client.query('COMMIT');
+    return deleteResult.rows[0] || null;
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Error removing reaction:', error.message);
     throw error;
+  } finally {
+    client.release();
   }
 };
 
@@ -207,6 +316,42 @@ const findByCommentId = async (commentId) => {
   }
 };
 
+// Find reactions by user and post IDs (batch)
+const findReactionsByPostIds = async (userId, postIds) => {
+  try {
+    if (!postIds || postIds.length === 0) {
+      return [];
+    }
+    const query = `
+      SELECT * FROM reactions
+      WHERE user_id = $1 AND post_id = ANY($2::integer[]) AND comment_id IS NULL
+    `;
+    const result = await pool.query(query, [userId, postIds]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding reactions by post IDs:', error.message);
+    throw error;
+  }
+};
+
+// Find reactions by user and comment IDs (batch)
+const findReactionsByCommentIds = async (userId, commentIds) => {
+  try {
+    if (!commentIds || commentIds.length === 0) {
+      return [];
+    }
+    const query = `
+      SELECT * FROM reactions
+      WHERE user_id = $1 AND comment_id = ANY($2::integer[]) AND post_id IS NULL
+    `;
+    const result = await pool.query(query, [userId, commentIds]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding reactions by comment IDs:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeReactionsTable,
   create,
@@ -214,4 +359,6 @@ module.exports = {
   findReaction,
   findByPostId,
   findByCommentId,
+  findReactionsByPostIds,
+  findReactionsByCommentIds,
 };

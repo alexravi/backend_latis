@@ -142,6 +142,54 @@ const remove = async (id) => {
   }
 };
 
+// Bulk create awards
+const bulkCreate = async (client, userId, awards) => {
+  if (!awards || awards.length === 0) {
+    return [];
+  }
+
+  try {
+    const values = [];
+    const placeholders = [];
+    let paramCount = 1;
+
+    awards.forEach((award) => {
+      placeholders.push(
+        `($${paramCount}, $${paramCount + 1}, $${paramCount + 2}, $${paramCount + 3}, $${paramCount + 4}, $${paramCount + 5}, $${paramCount + 6}, $${paramCount + 7}, $${paramCount + 8}, $${paramCount + 9}, $${paramCount + 10})`
+      );
+      values.push(
+        userId,
+        award.organization_id ?? null,
+        award.title,
+        award.award_type,
+        award.issuing_organization ?? null,
+        award.description ?? null,
+        award.date_received ?? null,
+        award.year ?? null,
+        award.monetary_value ?? null,
+        award.currency ?? null,
+        award.url ?? null
+      );
+      paramCount += 11;
+    });
+
+    const query = `
+      INSERT INTO awards (
+        user_id, organization_id, title, award_type, issuing_organization,
+        description, date_received, year, monetary_value, currency, url
+      )
+      VALUES ${placeholders.join(', ')}
+      RETURNING *
+    `;
+
+    const result = await client.query(query, values);
+    return result.rows;
+  } catch (error) {
+    console.error('Error bulk creating awards:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeAwardsTable,
   create,
@@ -149,4 +197,5 @@ module.exports = {
   findById,
   update,
   remove,
+  bulkCreate,
 };
