@@ -23,15 +23,16 @@ const initializeSharesTable = async () => {
 };
 
 // Create share
-const create = async (shareData) => {
+const create = async (shareData, client = null) => {
   try {
+    const queryClient = client || pool;
     const query = `
       INSERT INTO shares (user_id, post_id, shared_content)
       VALUES ($1, $2, $3)
       ON CONFLICT (user_id, post_id) DO NOTHING
       RETURNING *
     `;
-    const result = await pool.query(query, [
+    const result = await queryClient.query(query, [
       shareData.user_id,
       shareData.post_id,
       shareData.shared_content || null
@@ -99,14 +100,15 @@ const hasShared = async (userId, postId) => {
 };
 
 // Remove share
-const remove = async (userId, postId) => {
+const remove = async (userId, postId, client = null) => {
   try {
+    const queryClient = client || pool;
     const query = `
       DELETE FROM shares
       WHERE user_id = $1 AND post_id = $2
       RETURNING *
     `;
-    const result = await pool.query(query, [userId, postId]);
+    const result = await queryClient.query(query, [userId, postId]);
     return result.rows[0] || null;
   } catch (error) {
     console.error('Error removing share:', error.message);

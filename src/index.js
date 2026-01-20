@@ -35,7 +35,17 @@ const { initializeActivityFeedTable } = require('./models/ActivityFeed');
 const { initializeNotificationsTable } = require('./models/Notification');
 const { initializeNotificationPreferencesTable } = require('./models/NotificationPreference');
 const { initializeProfileSettingsTable } = require('./models/ProfileSettings');
+const { testConnection: testRedisConnection } = require('./config/redis');
+const { initializeSocketIO } = require('./services/socketService');
+const { addIndexes } = require('./migrations/addIndexes');
+const { setupUnhandledRejectionHandler, setupUncaughtExceptionHandler } = require('./middleware/errorMiddleware');
+const { createEmailWorker } = require('./jobs/emailJob');
 const app = require('./server');
+const http = require('http');
+
+// Setup global error handlers
+setupUnhandledRejectionHandler();
+setupUncaughtExceptionHandler();
 
 const PORT = process.env.PORT || 3000;
 
@@ -101,6 +111,16 @@ const startServer = async () => {
       await initializeProfileSettingsTable();
       
       console.log('\n✅ All database tables initialized successfully\n');
+      
+      // Create database indexes for performance optimization
+      try {
+        console.log('📊 Creating database indexes...\n');
+        await addIndexes();
+        console.log('✅ Database indexes created successfully\n');
+      } catch (error) {
+        console.log('⚠️  Warning: Could not create some database indexes');
+        console.log(`   Error: ${error.message}\n`);
+      }
     } catch (error) {
       console.log('⚠️  Warning: Could not initialize some database tables');
       console.log(`   Error: ${error.message}\n`);
@@ -111,11 +131,52 @@ const startServer = async () => {
     console.log('   Server will start but database operations may fail\n');
   }
 
+  // Test Redis connection (optional, don't fail if Redis is not available)
+  if (process.env.REDIS_HOST) {
+    console.log('\n🔌 Testing Redis connection...');
+    const redisStatus = await testRedisConnection();
+    if (redisStatus.success) {
+      console.log('✅ Redis connected successfully');
+    } else {
+      console.log('⚠️  Redis connection failed (will continue without caching/real-time features)');
+      console.log(`   Error: ${redisStatus.error || 'Connection timeout'}\n`);
+    }
+  }
+
+  // Create HTTP server
+  const httpServer = http.createServer(app);
+
+  // Initialize Socket.io (only if Redis is enabled or WebSocket is enabled)
+  if (process.env.WS_ENABLED !== 'false') {
+    try {
+      await initializeSocketIO(httpServer);
+    } catch (error) {
+      console.log('⚠️  Socket.io initialization failed:', error.message);
+      console.log('   Server will continue without WebSocket support\n');
+    }
+  }
+
+  // Initialize job workers (only if Redis is available)
+  if (process.env.REDIS_HOST) {
+    try {
+      const emailWorker = createEmailWorker();
+      console.log('✅ Email worker started\n');
+    } catch (error) {
+      console.log('⚠️  Job workers initialization failed:', error.message);
+      console.log('   Server will continue without background job processing\n');
+    }
+  }
+
   // Start the server
-  app.listen(PORT, () => {
+  httpServer.listen(PORT, () => {
     console.log(`\n🚀 Server is running on port ${PORT}`);
     console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   API Docs: http://localhost:${PORT}/api-docs\n`);
+    console.log(`   API Docs: http://localhost:${PORT}/api-docs`);
+    if (process.env.WS_ENABLED !== 'false') {
+      console.log(`   WebSocket: Enabled\n`);
+    } else {
+      console.log(`   WebSocket: Disabled\n`);
+    }
   });
 };
 

@@ -1,8 +1,25 @@
 // Post controller - Post management and voting
 const { body, validationResult } = require('express-validator');
+const { pool } = require('../config/database');
 const Post = require('../models/Post');
 const Comment = require('../models/Comment');
 const Reaction = require('../models/Reaction');
+const Share = require('../models/Share');
+const {
+  getPostFeed,
+  setPostFeed,
+  invalidatePostFeed,
+} = require('../services/cacheService');
+const {
+  emitPostCreated,
+  emitPostUpdated,
+  emitPostDeleted,
+  emitPostReposted,
+  emitPostUnreposted,
+  emitVoteUpvote,
+  emitVoteDownvote,
+  emitVoteRemoved,
+} = require('../services/eventService');
 
 // Validation rules
 const validatePost = [
@@ -42,6 +59,9 @@ const createPost = async (req, res) => {
 
     const post = await Post.create(postData);
 
+    // Emit event for real-time updates
+    emitPostCreated(post);
+
     res.status(201).json({
       success: true,
       message: 'Post created successfully',
@@ -64,7 +84,45 @@ const getFeed = async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = parseInt(req.query.offset) || 0;
 
-    const posts = await Post.findFeedSorted(userId, sortBy, limit, offset);
+    // Try to get from cache first (only for first page and common sorts)
+    let posts;
+    let fromCache = false;
+    let isStale = false;
+    
+    if (offset === 0 && (sortBy === 'new' || sortBy === 'hot')) {
+      const cachedResult = await getPostFeed(userId, sortBy, limit, offset);
+      if (cachedResult) {
+        posts = cachedResult.data;
+        fromCache = true;
+        isStale = cachedResult.isStale;
+        
+        // If stale, trigger background refresh (stale-while-revalidate pattern)
+        if (isStale) {
+          // Refresh in background without blocking response
+          Post.findFeedSorted(userId, sortBy, limit, offset)
+            .then(freshPosts => {
+              // Update cache with fresh data
+              setPostFeed(userId, sortBy, limit, offset, freshPosts).catch(err => {
+                console.error('Failed to refresh stale cache:', err.message);
+              });
+            })
+            .catch(err => {
+              console.error('Failed to refresh stale feed:', err.message);
+            });
+        }
+      } else {
+        // No cache, fetch from database
+        posts = await Post.findFeedSorted(userId, sortBy, limit, offset);
+        // Cache the feed (async, don't wait)
+        setPostFeed(userId, sortBy, limit, offset, posts).catch(err => {
+          // Log but don't fail request if cache fails
+          console.error('Failed to cache feed:', err.message);
+        });
+      }
+    } else {
+      // For paginated or less common sorts, don't cache
+      posts = await Post.findFeedSorted(userId, sortBy, limit, offset);
+    }
 
     // Batch fetch user's reactions for all posts
     const postIds = posts.map(p => p.id);
@@ -74,13 +132,30 @@ const getFeed = async (req, res) => {
       reactionsByPostId[reaction.post_id] = reaction;
     });
 
-    // Map posts with user votes
+    // Map posts with user votes and format reposts
     const postsWithVotes = posts.map(post => {
       const reaction = reactionsByPostId[post.id];
-      return {
+      const postData = {
         ...post,
         user_vote: reaction ? reaction.reaction_type : null,
       };
+
+      // If this is a repost, include original post data
+      if (post.parent_post_id || post.original_post_id) {
+        postData.is_repost = true;
+        postData.original_post = post.original_post_id ? {
+          id: post.original_post_id,
+          content: post.original_content,
+          user_id: post.original_user_id,
+          first_name: post.original_first_name,
+          last_name: post.original_last_name,
+          profile_image_url: post.original_profile_image_url,
+          headline: post.original_headline,
+          created_at: post.original_created_at,
+        } : null;
+      }
+
+      return postData;
     });
 
     res.status(200).json({
@@ -187,6 +262,11 @@ const updatePost = async (req, res) => {
 
     const updatedPost = await Post.update(postId, req.body);
 
+    // Emit event for real-time updates
+    if (updatedPost) {
+      emitPostUpdated(updatedPost);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Post updated successfully',
@@ -223,6 +303,9 @@ const deletePost = async (req, res) => {
 
     await Post.remove(postId);
 
+    // Emit event for real-time updates
+    emitPostDeleted(postId, req.user.id);
+
     res.status(200).json({
       success: true,
       message: 'Post deleted successfully',
@@ -242,6 +325,14 @@ const upvotePost = async (req, res) => {
     const postId = parseInt(req.params.id);
     const userId = req.user.id;
 
+    // Validate postId is a valid integer
+    if (isNaN(postId) || postId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid post ID',
+      });
+    }
+
     const post = await Post.findById(postId);
     if (!post) {
       return res.status(404).json({
@@ -250,6 +341,9 @@ const upvotePost = async (req, res) => {
       });
     }
 
+    // Check existing reaction to determine behavior
+    const existingReaction = await Reaction.findReaction(userId, postId, null);
+    
     const reaction = await Reaction.create({
       user_id: userId,
       post_id: postId,
@@ -258,14 +352,41 @@ const upvotePost = async (req, res) => {
 
     const updatedPost = await Post.findById(postId);
 
-    res.status(200).json({
-      success: true,
-      message: 'Post upvoted',
-      data: {
-        ...updatedPost,
-        user_vote: reaction ? reaction.reaction_type : null,
-      },
-    });
+    // Determine what happened based on reaction result
+    if (!reaction) {
+      // Vote was toggled off (was already upvoted)
+      emitVoteRemoved('post', postId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Vote removed',
+        data: {
+          ...updatedPost,
+          user_vote: null,
+        },
+      });
+    } else if (existingReaction && existingReaction.reaction_type === 'downvote') {
+      // Vote was toggled from downvote to upvote
+      emitVoteUpvote('post', postId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Post upvoted',
+        data: {
+          ...updatedPost,
+          user_vote: 'upvote',
+        },
+      });
+    } else {
+      // New upvote added
+      emitVoteUpvote('post', postId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Post upvoted',
+        data: {
+          ...updatedPost,
+          user_vote: 'upvote',
+        },
+      });
+    }
   } catch (error) {
     console.error('Upvote post error:', error.message);
     res.status(500).json({
@@ -281,6 +402,14 @@ const downvotePost = async (req, res) => {
     const postId = parseInt(req.params.id);
     const userId = req.user.id;
 
+    // Validate postId is a valid integer
+    if (isNaN(postId) || postId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid post ID',
+      });
+    }
+
     const post = await Post.findById(postId);
     if (!post) {
       return res.status(404).json({
@@ -289,6 +418,9 @@ const downvotePost = async (req, res) => {
       });
     }
 
+    // Check existing reaction to determine behavior
+    const existingReaction = await Reaction.findReaction(userId, postId, null);
+    
     const reaction = await Reaction.create({
       user_id: userId,
       post_id: postId,
@@ -297,14 +429,41 @@ const downvotePost = async (req, res) => {
 
     const updatedPost = await Post.findById(postId);
 
-    res.status(200).json({
-      success: true,
-      message: 'Post downvoted',
-      data: {
-        ...updatedPost,
-        user_vote: reaction ? reaction.reaction_type : null,
-      },
-    });
+    // Determine what happened based on reaction result
+    if (!reaction) {
+      // Vote was toggled off (was already downvoted)
+      emitVoteRemoved('post', postId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Vote removed',
+        data: {
+          ...updatedPost,
+          user_vote: null,
+        },
+      });
+    } else if (existingReaction && existingReaction.reaction_type === 'upvote') {
+      // Vote was toggled from upvote to downvote
+      emitVoteDownvote('post', postId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Post downvoted',
+        data: {
+          ...updatedPost,
+          user_vote: 'downvote',
+        },
+      });
+    } else {
+      // New downvote added
+      emitVoteDownvote('post', postId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Post downvoted',
+        data: {
+          ...updatedPost,
+          user_vote: 'downvote',
+        },
+      });
+    }
   } catch (error) {
     console.error('Downvote post error:', error.message);
     res.status(500).json({
@@ -320,6 +479,14 @@ const removeVote = async (req, res) => {
     const postId = parseInt(req.params.id);
     const userId = req.user.id;
 
+    // Validate postId is a valid integer
+    if (isNaN(postId) || postId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid post ID',
+      });
+    }
+
     const post = await Post.findById(postId);
     if (!post) {
       return res.status(404).json({
@@ -328,10 +495,17 @@ const removeVote = async (req, res) => {
       });
     }
 
-    await Reaction.remove(userId, postId, null);
+    // Remove vote (idempotent - returns null if no vote exists)
+    const removedReaction = await Reaction.remove(userId, postId, null);
+
+    // Only emit event if vote was actually removed
+    if (removedReaction) {
+      emitVoteRemoved('post', postId, userId);
+    }
 
     const updatedPost = await Post.findById(postId);
 
+    // Always return success (idempotent operation)
     res.status(200).json({
       success: true,
       message: 'Vote removed',
@@ -349,6 +523,241 @@ const removeVote = async (req, res) => {
   }
 };
 
+// Repost a post
+const repostPost = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const originalPostId = parseInt(req.params.id);
+    const userId = req.user.id;
+
+    // Check if original post exists
+    const originalPost = await Post.findById(originalPostId);
+    if (!originalPost) {
+      return res.status(404).json({
+        success: false,
+        message: 'Original post not found',
+      });
+    }
+
+    // Check if user has already reposted this post
+    const existingRepost = await Post.hasReposted(userId, originalPostId);
+    if (existingRepost) {
+      return res.status(400).json({
+        success: false,
+        message: 'You have already reposted this post',
+      });
+    }
+
+    // Prevent reposting your own post
+    if (originalPost.user_id === userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot repost your own post',
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // Create repost (new post with parent_post_id)
+    const repostData = {
+      user_id: userId,
+      content: '', // Empty content for reposts (reference-only display)
+      post_type: 'post',
+      visibility: originalPost.visibility, // Inherit visibility from original
+      parent_post_id: originalPostId,
+    };
+
+    // Create repost within transaction
+    const repost = await Post.create(repostData, client);
+
+    // Increment shares count on original post (using transaction client)
+    await Post.incrementShares(originalPostId, 1, client);
+
+    // Create Share entry for analytics tracking (using transaction client)
+    await Share.create({
+      user_id: userId,
+      post_id: originalPostId,
+      shared_content: null,
+    }, client);
+
+    await client.query('COMMIT');
+
+    // Emit event for real-time updates
+    emitPostReposted(repost, originalPostId);
+
+    // Fetch repost with user info and original post reference
+    const repostWithUser = await Post.findById(repost.id);
+    const originalPostData = await Post.findById(originalPostId);
+
+    res.status(201).json({
+      success: true,
+      message: 'Post reposted successfully',
+      data: {
+        ...repostWithUser,
+        original_post: {
+          id: originalPostData.id,
+          content: originalPostData.content,
+          user_id: originalPostData.user_id,
+          first_name: originalPostData.first_name,
+          last_name: originalPostData.last_name,
+          profile_image_url: originalPostData.profile_image_url,
+          headline: originalPostData.headline,
+          created_at: originalPostData.created_at,
+        },
+      },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Repost post error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  } finally {
+    client.release();
+  }
+};
+
+// Remove repost (unrepost)
+const unrepostPost = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const originalPostId = parseInt(req.params.id);
+    const userId = req.user.id;
+
+    // Check if original post exists
+    const originalPost = await Post.findById(originalPostId);
+    if (!originalPost) {
+      return res.status(404).json({
+        success: false,
+        message: 'Original post not found',
+      });
+    }
+
+    // Find the repost
+    const repost = await Post.hasReposted(userId, originalPostId);
+    if (!repost) {
+      return res.status(404).json({
+        success: false,
+        message: 'You have not reposted this post',
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // Delete the repost (using transaction client)
+    await Post.remove(repost.id, client);
+
+    // Decrement shares count on original post (using transaction client)
+    await Post.incrementShares(originalPostId, -1, client);
+
+    // Remove Share entry (using transaction client)
+    await Share.remove(userId, originalPostId, client);
+
+    await client.query('COMMIT');
+
+    // Emit event for real-time updates
+    emitPostUnreposted(originalPostId, userId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Repost removed successfully',
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Unrepost error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  } finally {
+    client.release();
+  }
+};
+
+// Get reposts for a post
+const getReposts = async (req, res) => {
+  try {
+    const postId = parseInt(req.params.id);
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+
+    // Validate postId is a valid integer
+    if (isNaN(postId) || postId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid post ID',
+      });
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: 'Post not found',
+      });
+    }
+
+    const reposts = await Post.findByRepostId(postId, limit, offset);
+
+    res.status(200).json({
+      success: true,
+      data: reposts,
+      pagination: {
+        limit,
+        offset,
+        hasMore: reposts.length === limit,
+      },
+    });
+  } catch (error) {
+    console.error('Get reposts error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Check if user has reposted a post
+const checkReposted = async (req, res) => {
+  try {
+    const postId = parseInt(req.params.id);
+    const userId = req.user.id;
+
+    // Validate postId is a valid integer
+    if (isNaN(postId) || postId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid post ID',
+      });
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: 'Post not found',
+      });
+    }
+
+    const repost = await Post.hasReposted(userId, postId);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        has_reposted: !!repost,
+        repost_id: repost ? repost.id : null,
+      },
+    });
+  } catch (error) {
+    console.error('Check reposted error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
 module.exports = {
   createPost,
   getFeed,
@@ -358,5 +767,9 @@ module.exports = {
   upvotePost,
   downvotePost,
   removeVote,
+  repostPost,
+  unrepostPost,
+  getReposts,
+  checkReposted,
   validatePost,
 };

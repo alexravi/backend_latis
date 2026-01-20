@@ -10,8 +10,8 @@ const initializeUsersTable = async () => {
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
-        first_name VARCHAR(100),
-        last_name VARCHAR(100),
+        first_name VARCHAR(100) NOT NULL,
+        last_name VARCHAR(100) NOT NULL,
         headline VARCHAR(255),
         summary TEXT,
         profile_image_url VARCHAR(500),
@@ -35,9 +35,10 @@ const initializeUsersTable = async () => {
     await pool.query(createQuery);
 
     // Add missing columns if they don't exist (for existing tables)
+    // For first_name and last_name, we need to add with DEFAULT first, then backfill, then set NOT NULL
     const columnsToAdd = [
-      { name: 'first_name', type: 'VARCHAR(100)' },
-      { name: 'last_name', type: 'VARCHAR(100)' },
+      { name: 'first_name', type: 'VARCHAR(100)', requiresBackfill: true },
+      { name: 'last_name', type: 'VARCHAR(100)', requiresBackfill: true },
       { name: 'headline', type: 'VARCHAR(255)' },
       { name: 'summary', type: 'TEXT' },
       { name: 'profile_image_url', type: 'VARCHAR(500)' },
@@ -78,8 +79,25 @@ const initializeUsersTable = async () => {
           // Column doesn't exist, add it
           try {
             // Quote column name to handle reserved keywords like 'current_role'
-            const alterQuery = `ALTER TABLE users ADD COLUMN "${column.name}" ${column.type}`;
+            let alterQuery = `ALTER TABLE users ADD COLUMN "${column.name}" ${column.type}`;
+            
+            // For first_name and last_name, add with DEFAULT first (for existing rows)
+            if (column.requiresBackfill) {
+              alterQuery = `ALTER TABLE users ADD COLUMN "${column.name}" ${column.type} DEFAULT ''`;
+            }
+            
             await pool.query(alterQuery);
+            
+            // If this is first_name or last_name, backfill existing rows and then set NOT NULL
+            if (column.requiresBackfill) {
+              // Backfill any NULL values with empty string
+              await pool.query(`UPDATE users SET "${column.name}" = '' WHERE "${column.name}" IS NULL`);
+              // Now set NOT NULL constraint
+              await pool.query(`ALTER TABLE users ALTER COLUMN "${column.name}" SET NOT NULL`);
+              // Remove the default since we've backfilled
+              await pool.query(`ALTER TABLE users ALTER COLUMN "${column.name}" DROP DEFAULT`);
+            }
+            
             addedColumns.push(column.name);
             console.log(`✅ Added column '${column.name}' (${column.type}) to users table`);
           } catch (alterError) {
@@ -189,8 +207,13 @@ const updateProfile = async (id, profileData, client = null) => {
 };
 
 // Create new user
-const create = async (email, hashedPassword, firstName = null, lastName = null) => {
+const create = async (email, hashedPassword, firstName, lastName) => {
   try {
+    // Validate required fields
+    if (!firstName || !lastName) {
+      throw new Error('First name and last name are required');
+    }
+    
     const query = `
       INSERT INTO users (email, password, first_name, last_name)
       VALUES ($1, $2, $3, $4)

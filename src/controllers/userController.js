@@ -15,17 +15,28 @@ const Award = require('../models/Award');
 const { normalizeSkills } = require('../utils/skillUtils');
 const { validateProfileData } = require('../utils/profileValidation');
 const { deriveProfileFields } = require('../utils/profileDerivation');
+const {
+  getUserProfile: getCachedUserProfile,
+  setUserProfile: setCachedUserProfile,
+  getUserProfessionalData: getCachedUserProfessionalData,
+  setUserProfessionalData: setCachedUserProfessionalData,
+  invalidateUserCaches,
+} = require('../services/cacheService');
 
 // Validation rules for profile update
 const validateProfileUpdate = [
   body('first_name')
     .optional()
     .trim()
+    .notEmpty()
+    .withMessage('First name cannot be empty')
     .isLength({ min: 1, max: 100 })
     .withMessage('First name must be between 1 and 100 characters'),
   body('last_name')
     .optional()
     .trim()
+    .notEmpty()
+    .withMessage('Last name cannot be empty')
     .isLength({ min: 1, max: 100 })
     .withMessage('Last name must be between 1 and 100 characters'),
   body('headline')
@@ -78,6 +89,15 @@ const getMyProfile = async (req, res) => {
   try {
     const userId = req.user.id;
     
+    // Try to get from cache first
+    const cachedProfile = await getCachedUserProfile(userId);
+    if (cachedProfile) {
+      return res.status(200).json({
+        success: true,
+        user: cachedProfile,
+      });
+    }
+    
     // Get user data
     const user = await User.findById(userId);
     if (!user) {
@@ -96,13 +116,20 @@ const getMyProfile = async (req, res) => {
     // Remove password from response
     const { password, ...userWithoutPassword } = user;
 
+    const profileData = {
+      ...userWithoutPassword,
+      profile: profile || null,
+      settings: settings || null,
+    };
+
+    // Cache the profile (async, don't wait)
+    setCachedUserProfile(userId, profileData).catch(err => {
+      console.error('Failed to cache user profile:', err.message);
+    });
+
     res.status(200).json({
       success: true,
-      user: {
-        ...userWithoutPassword,
-        profile: profile || null,
-        settings: settings || null,
-      },
+      user: profileData,
     });
   } catch (error) {
     console.error('Get profile error:', error.message);
@@ -126,6 +153,23 @@ const getUserProfile = async (req, res) => {
       });
     }
 
+    // Try to get from cache first (only for public profiles)
+    const cachedProfile = await getCachedUserProfile(userId);
+    if (cachedProfile) {
+      // Still need to check visibility
+      const settings = await ProfileSettings.findByUserId(userId);
+      if (settings && settings.profile_visibility === 'private' && req.user && req.user.id !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Profile is private',
+        });
+      }
+      return res.status(200).json({
+        success: true,
+        user: cachedProfile.user || cachedProfile,
+      });
+    }
+
     // Get user data
     const user = await User.findById(userId);
     if (!user) {
@@ -142,7 +186,7 @@ const getUserProfile = async (req, res) => {
     const settings = await ProfileSettings.findByUserId(userId);
     
     // Check if profile is visible (if settings exist and profile is private)
-    if (settings && settings.profile_visibility === 'private' && req.user.id !== userId) {
+    if (settings && settings.profile_visibility === 'private' && req.user && req.user.id !== userId) {
       return res.status(403).json({
         success: false,
         message: 'Profile is private',
@@ -152,12 +196,21 @@ const getUserProfile = async (req, res) => {
     // Remove sensitive fields
     const { password, ...userWithoutPassword } = user;
 
+    const profileData = {
+      ...userWithoutPassword,
+      profile: profile || null,
+    };
+
+    // Cache the profile if it's public (async, don't wait)
+    if (!settings || settings.profile_visibility !== 'private') {
+      setCachedUserProfile(userId, profileData).catch(err => {
+        console.error('Failed to cache user profile:', err.message);
+      });
+    }
+
     res.status(200).json({
       success: true,
-      user: {
-        ...userWithoutPassword,
-        profile: profile || null,
-      },
+      user: profileData,
     });
   } catch (error) {
     console.error('Get user profile error:', error.message);
@@ -192,6 +245,11 @@ const updateMyProfile = async (req, res) => {
         message: 'User not found',
       });
     }
+
+    // Invalidate user profile cache
+    await invalidateUserCaches(userId).catch(err => {
+      console.error('Failed to invalidate user cache:', err.message);
+    });
 
     // Remove password from response
     const { password, ...userWithoutPassword } = updatedUser;
@@ -240,6 +298,11 @@ const updateExtendedProfile = async (req, res) => {
 
     // Update or create extended profile
     const profile = await Profile.upsertProfile(userId, profileData);
+
+    // Invalidate user profile cache
+    await invalidateUserCaches(userId).catch(err => {
+      console.error('Failed to invalidate user cache:', err.message);
+    });
 
     res.status(200).json({
       success: true,
@@ -290,6 +353,11 @@ const createProfile = async (req, res) => {
 
     // Initialize default profile settings
     await ProfileSettings.upsert(userId, {});
+
+    // Invalidate user profile cache
+    await invalidateUserCaches(userId).catch(err => {
+      console.error('Failed to invalidate user cache:', err.message);
+    });
 
     // Get complete updated profile
     const updatedUser = await User.findById(userId);
@@ -568,6 +636,11 @@ const createCompleteProfile = async (req, res) => {
 
     const duration = Date.now() - startTime;
     console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Success - UserId: ${userId}, ProfileId: ${result.profile_id}, Completion: ${result.completion_percentage}%, Duration: ${duration}ms`);
+
+    // Invalidate user profile cache
+    await invalidateUserCaches(userId).catch(err => {
+      console.error('Failed to invalidate user cache:', err.message);
+    });
 
     // Return minimal response
     res.status(201).json({
@@ -934,6 +1007,11 @@ const updateCompleteProfile = async (req, res) => {
 
     const duration = Date.now() - startTime;
     console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Success - UserId: ${userId}, Data: experiences=${updatedExperiences?.length || 0}, education=${updatedEducation?.length || 0}, skills=${updatedSkills?.length || 0}, certifications=${updatedCerts?.length || 0}, publications=${updatedPubs?.length || 0}, projects=${updatedProjects?.length || 0}, awards=${updatedAwards?.length || 0}, Duration: ${duration}ms`);
+
+    // Invalidate user profile cache
+    await invalidateUserCaches(userId).catch(err => {
+      console.error('Failed to invalidate user cache:', err.message);
+    });
 
     res.status(200).json({
       success: true,

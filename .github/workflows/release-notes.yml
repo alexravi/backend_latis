@@ -1,0 +1,92 @@
+name: Generate Release Notes
+
+on:
+  push:
+    branches:
+      - production
+
+jobs:
+  generate-release-notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          # Get the latest tag
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$TAG" ]; then
+            # If no tags exist, compare with initial commit
+            BASE_REF=$(git rev-list --max-parents=0 HEAD)
+          else
+            BASE_REF=$TAG
+          fi
+          echo "base_ref=$BASE_REF" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+      
+      - name: Generate release notes
+        id: generate
+        env:
+          BASE_REF: ${{ steps.get_tag.outputs.base_ref }}
+          HEAD_REF: ${{ github.sha }}
+        run: |
+          # Extract version from package.json if available
+          VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "")
+          
+          # Generate release notes and save to file
+          node scripts/analyze-changes.js release "$BASE_REF" "$HEAD_REF" "$VERSION" > RELEASE_NOTES.md
+          
+          # Determine version
+          if [ -z "$VERSION" ]; then
+            VERSION=$(date +"%Y.%m.%d")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      
+      - name: Read release notes
+        id: notes
+        run: |
+          {
+            echo 'notes<<EOF'
+            cat RELEASE_NOTES.md
+            echo EOF
+          } >> $GITHUB_OUTPUT
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.generate.outputs.version }}
+          name: Release v${{ steps.generate.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Commit release notes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Check if RELEASE_NOTES.md exists and has changes
+          if [ -f RELEASE_NOTES.md ]; then
+            git add RELEASE_NOTES.md
+            git commit -m "chore: add release notes for v${{ steps.generate.outputs.version }}" || exit 0
+            git push || exit 0
+          fi

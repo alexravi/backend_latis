@@ -346,6 +346,104 @@ const findRepliesSorted = async (commentId, sortBy = 'best', limit = 20, offset 
   }
 };
 
+// Find all comments for a post (including all nested replies)
+const findAllByPostId = async (postId) => {
+  try {
+    const query = `
+      SELECT c.*, u.first_name, u.last_name, u.profile_image_url
+      FROM comments c
+      JOIN users u ON c.user_id = u.id
+      WHERE c.post_id = $1
+      ORDER BY c.created_at ASC
+    `;
+    const result = await pool.query(query, [postId]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding all comments by post ID:', error.message);
+    throw error;
+  }
+};
+
+// Build comment tree recursively (unlimited depth)
+const buildCommentTree = (comments, parentId = null, sortBy = 'best') => {
+  // Filter comments by parent
+  const filtered = comments.filter(c => {
+    if (parentId === null) {
+      return c.parent_comment_id === null;
+    }
+    return c.parent_comment_id === parentId;
+  });
+
+  // Sort comments based on sortBy
+  const sorted = filtered.sort((a, b) => {
+    switch (sortBy) {
+      case 'best':
+        // Use Wilson score if available, otherwise use score
+        const scoreA = calculateWilsonScore(a.upvotes_count || 0, a.downvotes_count || 0);
+        const scoreB = calculateWilsonScore(b.upvotes_count || 0, b.downvotes_count || 0);
+        if (Math.abs(scoreA - scoreB) < 0.0001) {
+          return new Date(b.created_at) - new Date(a.created_at);
+        }
+        return scoreB - scoreA;
+      case 'top':
+        if (a.score !== b.score) {
+          return b.score - a.score;
+        }
+        return new Date(b.created_at) - new Date(a.created_at);
+      case 'new':
+      default:
+        return new Date(b.created_at) - new Date(a.created_at);
+    }
+  });
+
+  // Recursively build tree for each comment
+  return sorted.map(comment => ({
+    ...comment,
+    replies: buildCommentTree(comments, comment.id, sortBy),
+  }));
+};
+
+// Find comments by post ID with nested tree structure
+const findByPostIdTree = async (postId, sortBy = 'best') => {
+  try {
+    // Fetch all comments for the post at once
+    const allComments = await findAllByPostId(postId);
+    
+    // Build tree structure
+    const tree = buildCommentTree(allComments, null, sortBy);
+    
+    return tree;
+  } catch (error) {
+    console.error('Error building comment tree:', error.message);
+    throw error;
+  }
+};
+
+// Find comment tree starting from a specific comment
+const findCommentTree = async (commentId, sortBy = 'best') => {
+  try {
+    // Get the comment
+    const comment = await findById(commentId);
+    if (!comment) {
+      return null;
+    }
+
+    // Get all comments for the same post
+    const allComments = await findAllByPostId(comment.post_id);
+    
+    // Build tree starting from this comment
+    const tree = {
+      ...comment,
+      replies: buildCommentTree([...allComments], commentId, sortBy),
+    };
+
+    return tree;
+  } catch (error) {
+    console.error('Error building comment tree:', error.message);
+    throw error;
+  }
+};
+
 // Delete comment
 const remove = async (id, client = null) => {
   try {
@@ -365,6 +463,10 @@ module.exports = {
   findById,
   findByPostId,
   findByPostIdSorted,
+  findByPostIdTree,
+  findAllByPostId,
+  findCommentTree,
+  buildCommentTree,
   findReplies,
   findRepliesSorted,
   update,

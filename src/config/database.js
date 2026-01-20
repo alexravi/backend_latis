@@ -10,7 +10,7 @@ const poolConfig = {
   max: parseInt(process.env.DB_POOL_MAX) || 20, // Maximum number of clients in the pool
   min: parseInt(process.env.DB_POOL_MIN) || 2, // Minimum number of clients in the pool
   idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-  connectionTimeoutMillis: 10000, // Return an error after 10 seconds if connection could not be established
+  connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT) || 30000, // Return an error after 30 seconds if connection could not be established (increased from 10s)
   // Handle dropped connections
   allowExitOnIdle: false, // Don't exit when pool is idle
 };
@@ -20,7 +20,13 @@ const pool = new Pool(poolConfig);
 
 // Enhanced error handling for pool events
 pool.on('error', (err, client) => {
-  console.error('Unexpected error on idle client', err);
+  console.error('❌ Unexpected error on idle database client:', err.message);
+  console.error('   Error code:', err.code);
+  console.error('   Error details:', {
+    message: err.message,
+    code: err.code,
+    stack: err.stack
+  });
   // Don't exit the process, just log the error
   // The pool will handle reconnection automatically
 });
@@ -96,6 +102,13 @@ const getClient = async () => {
 // Test database connection with retry
 const testConnection = async () => {
   try {
+    console.log('   Checking DATABASE_URL...', process.env.DATABASE_URL ? '✓ Set' : '✗ Missing');
+    console.log('   Pool config:', {
+      max: poolConfig.max,
+      min: poolConfig.min,
+      connectionTimeout: poolConfig.connectionTimeoutMillis + 'ms'
+    });
+    
     const result = await retryOperation(async () => {
       const client = await pool.connect();
       try {
@@ -107,7 +120,27 @@ const testConnection = async () => {
     });
     return { success: true, timestamp: result.now };
   } catch (error) {
-    console.error('Database connection test failed:', error.message);
+    console.error('❌ Database connection test failed:', error.message);
+    console.error('   Error code:', error.code);
+    console.error('   Error details:', {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+      syscall: error.syscall,
+      address: error.address,
+      port: error.port
+    });
+    
+    // Provide helpful troubleshooting tips
+    if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+      console.error('\n💡 Troubleshooting tips:');
+      console.error('   1. Check if PostgreSQL server is running');
+      console.error('   2. Verify DATABASE_URL is correct in .env file');
+      console.error('   3. Check network connectivity to database server');
+      console.error('   4. Verify database credentials');
+      console.error('   5. Check firewall settings');
+    }
+    
     return { success: false, error: error.message, code: error.code };
   }
 };

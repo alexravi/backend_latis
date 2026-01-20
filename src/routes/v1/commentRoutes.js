@@ -1,7 +1,7 @@
 // Comment routes
 const express = require('express');
 const router = express.Router();
-const { authenticateToken } = require('../middleware/authMiddleware');
+const { authenticateToken } = require('../../middleware/authMiddleware');
 const {
   createComment,
   getPostComments,
@@ -12,7 +12,7 @@ const {
   downvoteComment,
   removeVote,
   validateComment,
-} = require('../controllers/commentController');
+} = require('../../controllers/commentController');
 
 /**
  * @swagger

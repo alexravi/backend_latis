@@ -64,6 +64,8 @@ Stored in the `users` table. Updates basic profile information.
 
 | Field | Type | Required | Max Length | Description | Example |
 |-------|------|----------|------------|-------------|---------|
+| `first_name` | string | **Yes** | 100 | User's first name | "John" |
+| `last_name` | string | **Yes** | 100 | User's last name | "Smith" |
 | `headline` | string | No | 255 | Professional headline or tagline | "Cardiologist at Mayo Clinic" |
 | `summary` | string | No | 2000 | Professional summary or bio | "Experienced cardiologist with 10+ years..." |
 | `location` | string | No | 255 | Location (city, state, country) | "New York, NY, USA" |
@@ -98,6 +100,8 @@ You do not need to provide these fields - they will be computed automatically.
 ```json
 {
   "user": {
+    "first_name": "John",
+    "last_name": "Smith",
     "headline": "Cardiologist specializing in interventional procedures",
     "summary": "Board-certified cardiologist with over 10 years of experience...",
     "location": "New York, NY, USA",
@@ -154,7 +158,7 @@ Each experience object has the following fields:
 | Field | Type | Required | Max Length | Description | Example |
 |-------|------|----------|------------|-------------|---------|
 | `title` | string | **Yes** | 255 | Job title or position name | "Attending Physician" |
-| `position_type` | string | **Yes** | 100 | Type of position | "Residency", "Fellowship", "Clinical Position" |
+| `position_type` | string | **Yes** | 100 | Type of position (must be one of: full time, part time, contract, temporary, internship, residency, fellowship, volunteer, consultant) | "full time", "part time", "residency", "fellowship" |
 | `institution_name` | string | **Yes** | 255 | Name of institution/organization | "Mayo Clinic" |
 | `organization_id` | integer | No | - | Reference to organization in database | 123 |
 | `department` | string | No | 255 | Department name | "Cardiology Department" |
@@ -171,13 +175,24 @@ Each experience object has the following fields:
 
 **Date Format:** `YYYY-MM-DD` (ISO 8601 date format)
 
+**Position Type:** Must be one of the following values (case-insensitive):
+- `full time`
+- `part time`
+- `contract`
+- `temporary`
+- `internship`
+- `residency`
+- `fellowship`
+- `volunteer`
+- `consultant`
+
 **Example:**
 ```json
 {
   "experiences": [
     {
       "title": "Attending Physician",
-      "position_type": "Clinical Position",
+      "position_type": "full time",
       "institution_name": "Mayo Clinic",
       "department": "Cardiology Department",
       "specialty": "Cardiology",
@@ -193,7 +208,7 @@ Each experience object has the following fields:
     },
     {
       "title": "Fellow",
-      "position_type": "Fellowship",
+      "position_type": "fellowship",
       "institution_name": "Johns Hopkins Hospital",
       "specialty": "Cardiology",
       "subspecialty": "Interventional Cardiology",
@@ -565,6 +580,8 @@ Each award object has the following fields:
 ```json
 {
   "user": {
+    "first_name": "John",
+    "last_name": "Smith",
     "headline": "Cardiologist specializing in interventional procedures",
     "summary": "Board-certified cardiologist with over 10 years of experience...",
     "location": "New York, NY, USA",
@@ -583,7 +600,7 @@ Each award object has the following fields:
   "experiences": [
     {
       "title": "Attending Physician",
-      "position_type": "Clinical Position",
+      "position_type": "full time",
       "institution_name": "Mayo Clinic",
       "specialty": "Cardiology",
       "start_date": "2020-01-15",

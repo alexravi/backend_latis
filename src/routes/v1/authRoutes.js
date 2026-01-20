@@ -1,15 +1,15 @@
 // Authentication routes
 const express = require('express');
 const router = express.Router();
-const { authenticateToken } = require('../middleware/authMiddleware');
-const { authLimiter } = require('../middleware/rateLimiter');
+const { authenticateToken } = require('../../middleware/authMiddleware');
+const { authLimiter } = require('../../middleware/rateLimiter');
 const {
   signUp,
   signIn,
   logout,
   validateSignUp,
   validateSignIn,
-} = require('../controllers/authController');
+} = require('../../controllers/authController');
 
 /**
  * @swagger

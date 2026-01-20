@@ -1,0 +1,106 @@
+{
+  "categories": {
+    "feature": {
+      "label": "Features",
+      "emoji": "✨",
+      "patterns": [
+        "src/controllers/**",
+        "src/routes/**",
+        "src/services/**"
+      ],
+      "keywords": ["feat", "feature", "add", "new", "create"]
+    },
+    "fix": {
+      "label": "Bug Fixes",
+      "emoji": "🐛",
+      "patterns": [
+        "src/**/*fix*.js",
+        "src/**/*error*.js",
+        "src/utils/errorHandler.js"
+      ],
+      "keywords": ["fix", "bug", "error", "issue", "resolve"]
+    },
+    "database": {
+      "label": "Database Changes",
+      "emoji": "🗄️",
+      "patterns": [
+        "src/models/**",
+        "src/migrations/**"
+      ],
+      "keywords": ["migration", "schema", "model", "table", "database"]
+    },
+    "infrastructure": {
+      "label": "Infrastructure",
+      "emoji": "🔧",
+      "patterns": [
+        "src/middleware/**",
+        "src/config/**",
+        ".github/workflows/**",
+        "Dockerfile*",
+        "docker-compose*.yml",
+        "*.yml",
+        "*.yaml"
+      ],
+      "keywords": ["config", "middleware", "infra", "deploy", "ci/cd"]
+    },
+    "documentation": {
+      "label": "Documentation",
+      "emoji": "📝",
+      "patterns": [
+        "*.md",
+        "API_DOCUMENTATION*.md",
+        "README.md",
+        "docs/**"
+      ],
+      "keywords": ["docs", "readme", "documentation"]
+    },
+    "dependency": {
+      "label": "Dependencies",
+      "emoji": "📦",
+      "patterns": [
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml"
+      ],
+      "keywords": ["depend", "package", "upgrade", "update"]
+    },
+    "test": {
+      "label": "Tests",
+      "emoji": "🧪",
+      "patterns": [
+        "**/*.test.js",
+        "**/*.spec.js",
+        "**/__tests__/**",
+        "tests/**",
+        "test/**"
+      ],
+      "keywords": ["test", "spec", "coverage"]
+    },
+    "refactor": {
+      "label": "Refactoring",
+      "emoji": "♻️",
+      "patterns": [
+        "src/utils/**"
+      ],
+      "keywords": ["refactor", "cleanup", "optimize", "improve"]
+    }
+  },
+  "ignorePatterns": [
+    "node_modules/**",
+    ".git/**",
+    "logs/**",
+    "*.log",
+    ".env*",
+    "dist/**",
+    "build/**",
+    "coverage/**",
+    ".DS_Store"
+  ],
+  "outputFormat": {
+    "includeStats": true,
+    "includeFileList": true,
+    "maxFilesListed": 20,
+    "groupByCategory": true
+  }
+}

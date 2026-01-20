@@ -4,6 +4,14 @@ const { pool } = require('../config/database');
 const Post = require('../models/Post');
 const Comment = require('../models/Comment');
 const Reaction = require('../models/Reaction');
+const {
+  emitCommentCreated,
+  emitCommentUpdated,
+  emitCommentDeleted,
+  emitVoteUpvote,
+  emitVoteDownvote,
+  emitVoteRemoved,
+} = require('../services/eventService');
 
 // Validation rules
 const validateComment = [
@@ -85,8 +93,12 @@ const createComment = async (req, res) => {
 
       await client.query('COMMIT');
 
+      // Emit event for real-time updates
+      const commentForEvent = await Comment.findById(comment.id);
+      emitCommentCreated(commentForEvent);
+
       // Get user info for response
-      const commentWithUser = await Comment.findById(comment.id);
+      const commentWithUser = commentForEvent;
 
       res.status(201).json({
         success: true,
@@ -111,14 +123,46 @@ const createComment = async (req, res) => {
   }
 };
 
-// Get comments for a post
+// Helper function to collect all comment IDs from tree recursively
+const collectCommentIds = (comments) => {
+  const ids = [];
+  const traverse = (comments) => {
+    comments.forEach(comment => {
+      ids.push(comment.id);
+      if (comment.replies && comment.replies.length > 0) {
+        traverse(comment.replies);
+      }
+    });
+  };
+  traverse(comments);
+  return ids;
+};
+
+// Helper function to add user votes to comment tree recursively
+const addVotesToTree = (comments, reactionsByCommentId) => {
+  return comments.map(comment => {
+    const reaction = reactionsByCommentId[comment.id];
+    const commentWithVote = {
+      ...comment,
+      user_vote: reaction ? reaction.reaction_type : null,
+    };
+    
+    // Recursively add votes to replies
+    if (comment.replies && comment.replies.length > 0) {
+      commentWithVote.replies = addVotesToTree(comment.replies, reactionsByCommentId);
+    }
+    
+    return commentWithVote;
+  });
+};
+
+// Get comments for a post (with nested tree structure)
 const getPostComments = async (req, res) => {
   try {
     const postId = parseInt(req.params.postId);
     const userId = req.user.id;
     const sortBy = req.query.sort || 'best'; // best, top, new
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = parseInt(req.query.offset) || 0;
+    const useTree = req.query.tree === 'true' || req.query.tree === '1'; // Default to tree structure
 
     const post = await Post.findById(postId);
     if (!post) {
@@ -128,33 +172,59 @@ const getPostComments = async (req, res) => {
       });
     }
 
-    const comments = await Comment.findByPostIdSorted(postId, sortBy, limit, offset);
+    let comments;
+    if (useTree) {
+      // Use tree structure (unlimited depth)
+      comments = await Comment.findByPostIdTree(postId, sortBy);
+    } else {
+      // Use flat structure (backward compatibility)
+      const limit = parseInt(req.query.limit) || 50;
+      const offset = parseInt(req.query.offset) || 0;
+      comments = await Comment.findByPostIdSorted(postId, sortBy, limit, offset);
+      
+      // Add votes for flat structure
+      const commentIds = comments.map(c => c.id);
+      const reactions = await Reaction.findReactionsByCommentIds(userId, commentIds);
+      const reactionsByCommentId = {};
+      reactions.forEach(reaction => {
+        reactionsByCommentId[reaction.comment_id] = reaction;
+      });
+      
+      comments = comments.map(comment => {
+        const reaction = reactionsByCommentId[comment.id];
+        return {
+          ...comment,
+          user_vote: reaction ? reaction.reaction_type : null,
+        };
+      });
 
+      return res.status(200).json({
+        success: true,
+        data: comments,
+        pagination: {
+          limit,
+          offset,
+          hasMore: comments.length === limit,
+        },
+      });
+    }
+
+    // Collect all comment IDs from tree (all nesting levels)
+    const allCommentIds = collectCommentIds(comments);
+    
     // Batch fetch user's reactions for all comments
-    const commentIds = comments.map(c => c.id);
-    const reactions = await Reaction.findReactionsByCommentIds(userId, commentIds);
+    const reactions = await Reaction.findReactionsByCommentIds(userId, allCommentIds);
     const reactionsByCommentId = {};
     reactions.forEach(reaction => {
       reactionsByCommentId[reaction.comment_id] = reaction;
     });
 
-    // Map comments with user votes
-    const commentsWithVotes = comments.map(comment => {
-      const reaction = reactionsByCommentId[comment.id];
-      return {
-        ...comment,
-        user_vote: reaction ? reaction.reaction_type : null,
-      };
-    });
+    // Add votes to tree recursively
+    const commentsWithVotes = addVotesToTree(comments, reactionsByCommentId);
 
     res.status(200).json({
       success: true,
       data: commentsWithVotes,
-      pagination: {
-        limit,
-        offset,
-        hasMore: comments.length === limit,
-      },
     });
   } catch (error) {
     console.error('Get post comments error:', error.message);
@@ -165,52 +235,87 @@ const getPostComments = async (req, res) => {
   }
 };
 
-// Get single comment with replies
+// Get single comment with replies (full tree structure)
 const getCommentById = async (req, res) => {
   try {
     const commentId = parseInt(req.params.id);
     const userId = req.user.id;
     const sortBy = req.query.sort || 'best';
-    const replyLimit = parseInt(req.query.replyLimit) || 20;
+    const useTree = req.query.tree === 'true' || req.query.tree === '1'; // Default to tree structure
 
-    const comment = await Comment.findById(commentId);
-    if (!comment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Comment not found',
+    let comment;
+    if (useTree) {
+      // Get full comment tree starting from this comment
+      comment = await Comment.findCommentTree(commentId, sortBy);
+      if (!comment) {
+        return res.status(404).json({
+          success: false,
+          message: 'Comment not found',
+        });
+      }
+    } else {
+      // Backward compatibility: flat structure
+      comment = await Comment.findById(commentId);
+      if (!comment) {
+        return res.status(404).json({
+          success: false,
+          message: 'Comment not found',
+        });
+      }
+
+      const replyLimit = parseInt(req.query.replyLimit) || 20;
+      const replies = await Comment.findRepliesSorted(commentId, sortBy, replyLimit, 0);
+
+      // Batch fetch user's reactions for all replies
+      const replyIds = replies.map(r => r.id);
+      const reactions = await Reaction.findReactionsByCommentIds(userId, replyIds);
+      const reactionsByReplyId = {};
+      reactions.forEach(reaction => {
+        reactionsByReplyId[reaction.comment_id] = reaction;
+      });
+
+      // Map replies with user votes
+      comment.replies = replies.map(reply => {
+        const reaction = reactionsByReplyId[reply.id];
+        return {
+          ...reply,
+          user_vote: reaction ? reaction.reaction_type : null,
+        };
+      });
+
+      // Get user's vote for the comment itself
+      const userReaction = await Reaction.findReaction(userId, null, commentId);
+      comment.user_vote = userReaction ? userReaction.reaction_type : null;
+
+      return res.status(200).json({
+        success: true,
+        data: comment,
       });
     }
 
-    // Get user's vote
-    const userReaction = await Reaction.findReaction(userId, null, commentId);
-
-    // Get replies
-    const replies = await Comment.findRepliesSorted(commentId, sortBy, replyLimit, 0);
-
-    // Batch fetch user's reactions for all replies
-    const replyIds = replies.map(r => r.id);
-    const reactions = await Reaction.findReactionsByCommentIds(userId, replyIds);
-    const reactionsByReplyId = {};
+    // For tree structure: collect all comment IDs and add votes
+    const allCommentIds = collectCommentIds([comment]);
+    
+    // Batch fetch user's reactions for all comments in tree
+    const reactions = await Reaction.findReactionsByCommentIds(userId, allCommentIds);
+    const reactionsByCommentId = {};
     reactions.forEach(reaction => {
-      reactionsByReplyId[reaction.comment_id] = reaction;
+      reactionsByCommentId[reaction.comment_id] = reaction;
     });
 
-    // Map replies with user votes
-    const repliesWithVotes = replies.map(reply => {
-      const reaction = reactionsByReplyId[reply.id];
-      return {
-        ...reply,
-        user_vote: reaction ? reaction.reaction_type : null,
-      };
-    });
+    // Add votes recursively
+    const commentWithVote = {
+      ...comment,
+      user_vote: reactionsByCommentId[comment.id] ? reactionsByCommentId[comment.id].reaction_type : null,
+    };
+    
+    if (comment.replies && comment.replies.length > 0) {
+      commentWithVote.replies = addVotesToTree(comment.replies, reactionsByCommentId);
+    }
 
     res.status(200).json({
       success: true,
-      data: {
-        ...comment,
-        user_vote: userReaction ? userReaction.reaction_type : null,
-        replies: repliesWithVotes,
-      },
+      data: commentWithVote,
     });
   } catch (error) {
     console.error('Get comment by ID error:', error.message);
@@ -252,6 +357,11 @@ const updateComment = async (req, res) => {
     const updatedComment = await Comment.update(commentId, {
       content: req.body.content,
     });
+
+    // Emit event for real-time updates
+    if (updatedComment) {
+      emitCommentUpdated(updatedComment);
+    }
 
     res.status(200).json({
       success: true,
@@ -302,6 +412,9 @@ const deleteComment = async (req, res) => {
 
       await client.query('COMMIT');
 
+      // Emit event for real-time updates
+      emitCommentDeleted(comment);
+
       res.status(200).json({
         success: true,
         message: 'Comment deleted successfully',
@@ -327,6 +440,14 @@ const upvoteComment = async (req, res) => {
     const commentId = parseInt(req.params.id);
     const userId = req.user.id;
 
+    // Validate commentId is a valid integer
+    if (isNaN(commentId) || commentId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid comment ID',
+      });
+    }
+
     const comment = await Comment.findById(commentId);
     if (!comment) {
       return res.status(404).json({
@@ -335,6 +456,9 @@ const upvoteComment = async (req, res) => {
       });
     }
 
+    // Check existing reaction to determine behavior
+    const existingReaction = await Reaction.findReaction(userId, null, commentId);
+    
     const reaction = await Reaction.create({
       user_id: userId,
       comment_id: commentId,
@@ -343,14 +467,41 @@ const upvoteComment = async (req, res) => {
 
     const updatedComment = await Comment.findById(commentId);
 
-    res.status(200).json({
-      success: true,
-      message: 'Comment upvoted',
-      data: {
-        ...updatedComment,
-        user_vote: reaction ? reaction.reaction_type : null,
-      },
-    });
+    // Determine what happened based on reaction result
+    if (!reaction) {
+      // Vote was toggled off (was already upvoted)
+      emitVoteRemoved('comment', commentId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Vote removed',
+        data: {
+          ...updatedComment,
+          user_vote: null,
+        },
+      });
+    } else if (existingReaction && existingReaction.reaction_type === 'downvote') {
+      // Vote was toggled from downvote to upvote
+      emitVoteUpvote('comment', commentId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Comment upvoted',
+        data: {
+          ...updatedComment,
+          user_vote: 'upvote',
+        },
+      });
+    } else {
+      // New upvote added
+      emitVoteUpvote('comment', commentId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Comment upvoted',
+        data: {
+          ...updatedComment,
+          user_vote: 'upvote',
+        },
+      });
+    }
   } catch (error) {
     console.error('Upvote comment error:', error.message);
     res.status(500).json({
@@ -366,6 +517,14 @@ const downvoteComment = async (req, res) => {
     const commentId = parseInt(req.params.id);
     const userId = req.user.id;
 
+    // Validate commentId is a valid integer
+    if (isNaN(commentId) || commentId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid comment ID',
+      });
+    }
+
     const comment = await Comment.findById(commentId);
     if (!comment) {
       return res.status(404).json({
@@ -374,6 +533,9 @@ const downvoteComment = async (req, res) => {
       });
     }
 
+    // Check existing reaction to determine behavior
+    const existingReaction = await Reaction.findReaction(userId, null, commentId);
+    
     const reaction = await Reaction.create({
       user_id: userId,
       comment_id: commentId,
@@ -382,14 +544,41 @@ const downvoteComment = async (req, res) => {
 
     const updatedComment = await Comment.findById(commentId);
 
-    res.status(200).json({
-      success: true,
-      message: 'Comment downvoted',
-      data: {
-        ...updatedComment,
-        user_vote: reaction ? reaction.reaction_type : null,
-      },
-    });
+    // Determine what happened based on reaction result
+    if (!reaction) {
+      // Vote was toggled off (was already downvoted)
+      emitVoteRemoved('comment', commentId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Vote removed',
+        data: {
+          ...updatedComment,
+          user_vote: null,
+        },
+      });
+    } else if (existingReaction && existingReaction.reaction_type === 'upvote') {
+      // Vote was toggled from upvote to downvote
+      emitVoteDownvote('comment', commentId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Comment downvoted',
+        data: {
+          ...updatedComment,
+          user_vote: 'downvote',
+        },
+      });
+    } else {
+      // New downvote added
+      emitVoteDownvote('comment', commentId, userId);
+      res.status(200).json({
+        success: true,
+        message: 'Comment downvoted',
+        data: {
+          ...updatedComment,
+          user_vote: 'downvote',
+        },
+      });
+    }
   } catch (error) {
     console.error('Downvote comment error:', error.message);
     res.status(500).json({
@@ -405,6 +594,14 @@ const removeVote = async (req, res) => {
     const commentId = parseInt(req.params.id);
     const userId = req.user.id;
 
+    // Validate commentId is a valid integer
+    if (isNaN(commentId) || commentId < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid comment ID',
+      });
+    }
+
     const comment = await Comment.findById(commentId);
     if (!comment) {
       return res.status(404).json({
@@ -413,10 +610,17 @@ const removeVote = async (req, res) => {
       });
     }
 
-    await Reaction.remove(userId, null, commentId);
+    // Remove vote (idempotent - returns null if no vote exists)
+    const removedReaction = await Reaction.remove(userId, null, commentId);
+
+    // Only emit event if vote was actually removed
+    if (removedReaction) {
+      emitVoteRemoved('comment', commentId, userId);
+    }
 
     const updatedComment = await Comment.findById(commentId);
 
+    // Always return success (idempotent operation)
     res.status(200).json({
       success: true,
       message: 'Vote removed',
