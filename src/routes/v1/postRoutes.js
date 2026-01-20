@@ -1,7 +1,7 @@
 // Post routes
 const express = require('express');
 const router = express.Router();
-const { authenticateToken } = require('../middleware/authMiddleware');
+const { authenticateToken } = require('../../middleware/authMiddleware');
 const {
   createPost,
   getFeed,
@@ -16,8 +16,8 @@ const {
   getReposts,
   checkReposted,
   validatePost,
-} = require('../controllers/postController');
-const { getPostComments } = require('../controllers/commentController');
+} = require('../../controllers/postController');
+const { getPostComments } = require('../../controllers/commentController');
 
 /**
  * @swagger

@@ -1,5 +1,6 @@
 // Post model - User posts/content (medical discussions, case studies, updates, articles)
 const { pool } = require('../config/database');
+const logger = require('../utils/logger');
 
 // Initialize posts table
 const initializePostsTable = async () => {
@@ -56,8 +57,9 @@ const initializePostsTable = async () => {
 };
 
 // Create post
-const create = async (postData) => {
+const create = async (postData, client = null) => {
   try {
+    const queryClient = client || pool;
     const query = `
       INSERT INTO posts (
         user_id, content, post_type, visibility, parent_post_id
@@ -65,7 +67,7 @@ const create = async (postData) => {
       VALUES ($1, $2, $3, $4, $5)
       RETURNING *
     `;
-    const result = await pool.query(query, [
+    const result = await queryClient.query(query, [
       postData.user_id,
       postData.content,
       postData.post_type || 'post',
@@ -230,20 +232,21 @@ const incrementComments = async (id, increment = 1, client = null) => {
 };
 
 // Increment shares count
-const incrementShares = async (id, increment = 1) => {
+const incrementShares = async (id, increment = 1, client = null) => {
   try {
-    // Validate increment is a positive integer
-    if (!Number.isInteger(increment) || increment <= 0) {
-      throw new Error('increment must be a positive integer');
+    // Validate increment is an integer
+    if (!Number.isInteger(increment)) {
+      throw new Error('increment must be an integer');
     }
     
+    const queryClient = client || pool;
     const query = `
       UPDATE posts
-      SET shares_count = shares_count + $1, updated_at = NOW()
+      SET shares_count = GREATEST(shares_count + $1, 0), updated_at = NOW()
       WHERE id = $2
       RETURNING *
     `;
-    const result = await pool.query(query, [increment, id]);
+    const result = await queryClient.query(query, [increment, id]);
     return result.rows[0] || null;
   } catch (error) {
     console.error('Error incrementing shares:', error.message);
@@ -308,8 +311,62 @@ const incrementDownvotes = async (id, increment = 1, client = null) => {
   }
 };
 
-// Find feed posts with sorting
+// Find original post when given a repost ID
+const findOriginalPost = async (repostId) => {
+  try {
+    const query = `
+      SELECT op.*, ou.first_name, ou.last_name, ou.profile_image_url, ou.headline
+      FROM posts rp
+      JOIN posts op ON rp.parent_post_id = op.id
+      JOIN users ou ON op.user_id = ou.id
+      WHERE rp.id = $1
+    `;
+    const result = await pool.query(query, [repostId]);
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('Error finding original post:', error.message);
+    throw error;
+  }
+};
+
+// Find reposts of a specific post
+const findByRepostId = async (originalPostId, limit = 50, offset = 0) => {
+  try {
+    const query = `
+      SELECT p.*, u.first_name, u.last_name, u.profile_image_url, u.headline
+      FROM posts p
+      JOIN users u ON p.user_id = u.id
+      WHERE p.parent_post_id = $1
+      ORDER BY p.created_at DESC
+      LIMIT $2 OFFSET $3
+    `;
+    const result = await pool.query(query, [originalPostId, limit, offset]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding reposts:', error.message);
+    throw error;
+  }
+};
+
+// Check if user has reposted a post
+const hasReposted = async (userId, originalPostId) => {
+  try {
+    const query = `
+      SELECT * FROM posts
+      WHERE user_id = $1 AND parent_post_id = $2
+    `;
+    const result = await pool.query(query, [userId, originalPostId]);
+    return result.rows.length > 0 ? result.rows[0] : null;
+  } catch (error) {
+    console.error('Error checking if user has reposted:', error.message);
+    throw error;
+  }
+};
+
+// Find feed posts with sorting (includes reposts with original post data)
+// Optimized query with better JOIN strategies and query time logging
 const findFeedSorted = async (userId, sortBy = 'new', limit = 20, offset = 0) => {
+  const startTime = Date.now();
   try {
     let orderClause = 'p.created_at DESC';
     
@@ -328,37 +385,119 @@ const findFeedSorted = async (userId, sortBy = 'new', limit = 20, offset = 0) =>
         break;
     }
     
+    // Optimized query: Use EXISTS for connection checks (faster than LEFT JOIN + IS NOT NULL)
+    // Pre-filter posts by visibility before joining to reduce dataset size
     const query = `
-      SELECT DISTINCT p.*, u.first_name, u.last_name, u.profile_image_url, u.headline
-      FROM posts p
-      JOIN users u ON p.user_id = u.id
-      LEFT JOIN follows f ON f.following_id = p.user_id AND f.follower_id = $1
-      LEFT JOIN connections c ON (
-        (c.requester_id = $1 AND c.addressee_id = p.user_id) OR
-        (c.requester_id = p.user_id AND c.addressee_id = $1)
-      ) AND c.status = 'connected'
-      WHERE p.parent_post_id IS NULL
-        AND (
-          p.user_id = $1
-          OR (p.visibility = 'public')
-          OR (p.visibility = 'connections' AND c.id IS NOT NULL)
-        )
+      WITH visible_posts AS (
+        SELECT DISTINCT p.id
+        FROM posts p
+        WHERE p.parent_post_id IS NULL
+          AND (
+            p.user_id = $1
+            OR p.visibility = 'public'
+            OR (
+              p.visibility = 'connections' AND EXISTS (
+                SELECT 1 FROM connections c
+                WHERE (
+                  (c.requester_id = $1 AND c.addressee_id = p.user_id) OR
+                  (c.requester_id = p.user_id AND c.addressee_id = $1)
+                ) AND c.status = 'connected'
+              )
+            )
+          )
+        UNION
+        SELECT DISTINCT p.id
+        FROM posts p
+        INNER JOIN posts op ON p.parent_post_id = op.id
+        WHERE p.parent_post_id IS NOT NULL
+          AND (
+            p.user_id = $1
+            OR p.visibility = 'public'
+            OR (
+              p.visibility = 'connections' AND EXISTS (
+                SELECT 1 FROM connections c
+                WHERE (
+                  (c.requester_id = $1 AND c.addressee_id = p.user_id) OR
+                  (c.requester_id = p.user_id AND c.addressee_id = $1)
+                ) AND c.status = 'connected'
+              )
+            )
+          )
+          AND (
+            op.visibility = 'public'
+            OR (
+              op.visibility = 'connections' AND EXISTS (
+                SELECT 1 FROM connections oc
+                WHERE (
+                  (oc.requester_id = $1 AND oc.addressee_id = op.user_id) OR
+                  (oc.requester_id = op.user_id AND oc.addressee_id = $1)
+                ) AND oc.status = 'connected'
+              )
+            )
+          )
+      )
+      SELECT 
+        p.*, 
+        u.first_name, 
+        u.last_name, 
+        u.profile_image_url, 
+        u.headline,
+        -- Original post data for reposts
+        op.id as original_post_id,
+        op.content as original_content,
+        op.user_id as original_user_id,
+        op.created_at as original_created_at,
+        ou.first_name as original_first_name,
+        ou.last_name as original_last_name,
+        ou.profile_image_url as original_profile_image_url,
+        ou.headline as original_headline
+      FROM visible_posts vp
+      INNER JOIN posts p ON vp.id = p.id
+      INNER JOIN users u ON p.user_id = u.id
+      LEFT JOIN posts op ON p.parent_post_id = op.id
+      LEFT JOIN users ou ON op.user_id = ou.id
       ORDER BY ${orderClause}
       LIMIT $2 OFFSET $3
     `;
+    
     const result = await pool.query(query, [userId, limit, offset]);
+    const duration = Date.now() - startTime;
+    
+    // Log slow queries (over 500ms)
+    if (duration > 500) {
+      logger.warn('Slow feed query detected', {
+        userId,
+        sortBy,
+        limit,
+        offset,
+        duration: `${duration}ms`,
+        rowCount: result.rows.length,
+      });
+    } else if (process.env.LOG_LEVEL === 'debug') {
+      logger.logDatabaseQuery(query.substring(0, 200), duration, { userId, sortBy, limit, offset });
+    }
+    
     return result.rows;
   } catch (error) {
-    console.error('Error finding feed posts:', error.message);
+    const duration = Date.now() - startTime;
+    logger.logError(error, {
+      context: 'findFeedSorted',
+      userId,
+      sortBy,
+      limit,
+      offset,
+      duration: `${duration}ms`,
+    });
     throw error;
   }
 };
 
 // Delete post
-const remove = async (id) => {
+const remove = async (id, client = null) => {
   try {
+    const queryClient = client || pool;
     const query = 'DELETE FROM posts WHERE id = $1 RETURNING *';
-    const result = await pool.query(query, [id]);
+    const result = await queryClient.query(query, [id]);
     return result.rows[0] || null;
   } catch (error) {
     console.error('Error deleting post:', error.message);
@@ -373,6 +512,9 @@ module.exports = {
   findByUserId,
   findFeed,
   findFeedSorted,
+  findOriginalPost,
+  findByRepostId,
+  hasReposted,
   update,
   incrementLikes,
   incrementUpvotes,

@@ -13,7 +13,14 @@ const validateExperience = [
   body('position_type')
     .trim()
     .notEmpty()
-    .withMessage('Position type is required'),
+    .withMessage('Position type is required')
+    .custom((value) => {
+      const allowedTypes = ['full time', 'part time', 'contract', 'temporary', 'internship', 'residency', 'fellowship', 'volunteer', 'consultant'];
+      if (!allowedTypes.includes(value.toLowerCase())) {
+        throw new Error(`Position type must be one of: ${allowedTypes.join(', ')}`);
+      }
+      return true;
+    }),
   body('institution_name')
     .trim()
     .notEmpty()

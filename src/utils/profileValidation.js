@@ -32,6 +32,12 @@ const validateShape = (payload) => {
       }
       if (!exp.position_type || typeof exp.position_type !== 'string') {
         errors.push({ field: `experiences[${index}].position_type`, message: 'position_type is required and must be a string' });
+      } else {
+        const allowedPositionTypes = ['full time', 'part time', 'contract', 'temporary', 'internship', 'residency', 'fellowship', 'volunteer', 'consultant'];
+        const normalizedPositionType = exp.position_type.toLowerCase().trim();
+        if (!allowedPositionTypes.includes(normalizedPositionType)) {
+          errors.push({ field: `experiences[${index}].position_type`, message: `position_type must be one of: ${allowedPositionTypes.join(', ')}` });
+        }
       }
       if (!exp.institution_name || typeof exp.institution_name !== 'string') {
         errors.push({ field: `experiences[${index}].institution_name`, message: 'institution_name is required and must be a string' });

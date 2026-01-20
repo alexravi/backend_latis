@@ -1,0 +1,101 @@
+name: Generate PR Description
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  generate-pr-description:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Generate PR description
+        id: generate
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+        run: |
+          node scripts/analyze-changes.js pr "$BASE_REF" "$HEAD_REF" > description.txt
+      
+      - name: Read PR description
+        id: description
+        run: |
+          {
+            echo 'description<<EOF'
+            cat description.txt
+            echo EOF
+          } >> $GITHUB_OUTPUT
+      
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        env:
+          DESCRIPTION: ${{ steps.description.outputs.description }}
+        with:
+          script: |
+            const fs = require('fs');
+            const description = fs.readFileSync('description.txt', 'utf8');
+            
+            // Find existing bot comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(
+              comment => 
+                comment.user.type === 'Bot' && 
+                comment.body.includes('📋 Change Summary')
+            );
+            
+            const commentBody = `## 🤖 Auto-generated Change Summary\n\n${description}\n\n---\n*This summary is automatically generated based on file changes.*`;
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: commentBody,
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody,
+              });
+            }
+      
+      - name: Update PR body (if empty)
+        if: github.event.pull_request.body == ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const description = fs.readFileSync('description.txt', 'utf8');
+            
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              body: description,
+            });
