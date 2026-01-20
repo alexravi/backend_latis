@@ -182,7 +182,7 @@ const findByUserId = async (userId, status = null) => {
   }
 };
 
-// Find pending requests for a user
+// Find pending incoming requests for a user
 const findPendingRequests = async (userId) => {
   try {
     const query = `
@@ -196,6 +196,24 @@ const findPendingRequests = async (userId) => {
     return result.rows;
   } catch (error) {
     console.error('Error finding pending requests:', error.message);
+    throw error;
+  }
+};
+
+// Find pending outgoing requests from a user
+const findOutgoingRequests = async (userId) => {
+  try {
+    const query = `
+      SELECT c.*, u.first_name, u.last_name, u.profile_image_url, u.headline
+      FROM connections c
+      JOIN users u ON c.addressee_id = u.id
+      WHERE c.requester_id = $1 AND c.status = 'pending'
+      ORDER BY c.requested_at DESC
+    `;
+    const result = await pool.query(query, [userId]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding outgoing requests:', error.message);
     throw error;
   }
 };
@@ -224,5 +242,6 @@ module.exports = {
   findConnection,
   findByUserId,
   findPendingRequests,
+  findOutgoingRequests,
   getConnectionCount,
 };

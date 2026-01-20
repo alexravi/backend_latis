@@ -12,6 +12,9 @@ const MedicalCertification = require('../models/MedicalCertification');
 const MedicalPublication = require('../models/MedicalPublication');
 const MedicalProject = require('../models/MedicalProject');
 const Award = require('../models/Award');
+const Connection = require('../models/Connection');
+const Follow = require('../models/Follow');
+const Block = require('../models/Block');
 const { normalizeSkills } = require('../utils/skillUtils');
 const { validateProfileData } = require('../utils/profileValidation');
 const { deriveProfileFields } = require('../utils/profileDerivation');
@@ -84,6 +87,61 @@ const validateProfileUpdate = [
     .withMessage('Please provide a valid graduation year'),
 ];
 
+// Helper: validate and parse target user ID from params
+const parseTargetUserId = (req, res) => {
+  const { id } = req.params;
+  const targetUserId = parseInt(id, 10);
+
+  if (isNaN(targetUserId)) {
+    res.status(400).json({
+      success: false,
+      message: 'Invalid user ID',
+    });
+    return null;
+  }
+
+  return targetUserId;
+};
+
+// Helper: ensure target user exists and is not self
+const validateTargetUser = async (req, res) => {
+  const currentUserId = req.user.id;
+  const targetUserId = parseTargetUserId(req, res);
+  if (targetUserId === null) return null;
+
+  if (currentUserId === targetUserId) {
+    res.status(400).json({
+      success: false,
+      message: 'You cannot perform this action on yourself',
+    });
+    return null;
+  }
+
+  const targetUser = await User.findById(targetUserId);
+  if (!targetUser) {
+    res.status(404).json({
+      success: false,
+      message: 'Target user not found',
+    });
+    return null;
+  }
+
+  return { currentUserId, targetUserId, targetUser };
+};
+
+// Helper: check if users are blocked either way
+const ensureNotBlockedEitherWay = async (userId1, userId2, res) => {
+  const blocked = await Block.isBlockedEitherWay(userId1, userId2);
+  if (blocked) {
+    res.status(403).json({
+      success: false,
+      message: 'You cannot perform this action due to a block between users',
+    });
+    return false;
+  }
+  return true;
+};
+
 // Get current user's profile
 const getMyProfile = async (req, res) => {
   try {
@@ -153,20 +211,58 @@ const getUserProfile = async (req, res) => {
       });
     }
 
+    const viewerId = req.user ? req.user.id : null;
+
+    // Hard block: prevent viewing profile if there is a block either way
+    if (viewerId && viewerId !== userId) {
+      const isBlocked = await Block.isBlockedEitherWay(viewerId, userId);
+      if (isBlocked) {
+        return res.status(403).json({
+          success: false,
+          message: 'You cannot view this profile',
+        });
+      }
+    }
+
     // Try to get from cache first (only for public profiles)
     const cachedProfile = await getCachedUserProfile(userId);
     if (cachedProfile) {
       // Still need to check visibility
       const settings = await ProfileSettings.findByUserId(userId);
-      if (settings && settings.profile_visibility === 'private' && req.user && req.user.id !== userId) {
+      if (settings && settings.profile_visibility === 'private' && viewerId && viewerId !== userId) {
         return res.status(403).json({
           success: false,
           message: 'Profile is private',
         });
       }
+
+      const profilePayload = cachedProfile.user || cachedProfile;
+
+      // Attach relationship flags if viewer is authenticated
+      if (viewerId) {
+        const [connection, iFollowThem, theyFollowMe, iBlocked, blockedMe] = await Promise.all([
+          Connection.findConnection(viewerId, userId),
+          Follow.isFollowing(viewerId, userId),
+          Follow.isFollowing(userId, viewerId),
+          Block.isBlockedOneWay(viewerId, userId),
+          Block.isBlockedOneWay(userId, viewerId),
+        ]);
+
+        profilePayload.relationship = {
+          isConnected: !!connection && connection.status === 'connected',
+          connectionStatus: connection ? connection.status : null,
+          connectionRequesterId: connection ? connection.requester_id : null,
+          connectionPending: !!connection && connection.status === 'pending',
+          iFollowThem,
+          theyFollowMe,
+          iBlocked,
+          blockedMe,
+        };
+      }
+
       return res.status(200).json({
         success: true,
-        user: cachedProfile.user || cachedProfile,
+        user: profilePayload,
       });
     }
 
@@ -200,6 +296,28 @@ const getUserProfile = async (req, res) => {
       ...userWithoutPassword,
       profile: profile || null,
     };
+
+    // Attach relationship flags if viewer is authenticated
+    if (viewerId) {
+      const [connection, iFollowThem, theyFollowMe, iBlocked, blockedMe] = await Promise.all([
+        Connection.findConnection(viewerId, userId),
+        Follow.isFollowing(viewerId, userId),
+        Follow.isFollowing(userId, viewerId),
+        Block.isBlockedOneWay(viewerId, userId),
+        Block.isBlockedOneWay(userId, viewerId),
+      ]);
+
+      profileData.relationship = {
+        isConnected: !!connection && connection.status === 'connected',
+        connectionStatus: connection ? connection.status : null,
+        connectionRequesterId: connection ? connection.requester_id : null,
+        connectionPending: !!connection && connection.status === 'pending',
+        iFollowThem,
+        theyFollowMe,
+        iBlocked,
+        blockedMe,
+      };
+    }
 
     // Cache the profile if it's public (async, don't wait)
     if (!settings || settings.profile_visibility !== 'private') {
@@ -1040,6 +1158,418 @@ const updateCompleteProfile = async (req, res) => {
   }
 };
 
+// -----------------------------
+// Connections / Follows / Blocks
+// -----------------------------
+
+// Send connection request
+const sendConnectionRequest = async (req, res) => {
+  try {
+    const validated = await validateTargetUser(req, res);
+    if (!validated) return;
+    const { currentUserId, targetUserId } = validated;
+
+    // Check blocks
+    const allowed = await ensureNotBlockedEitherWay(currentUserId, targetUserId, res);
+    if (!allowed) return;
+
+    // Check existing connection
+    const existing = await Connection.findConnection(currentUserId, targetUserId);
+    if (existing) {
+      if (existing.status === 'connected') {
+        return res.status(400).json({
+          success: false,
+          message: 'You are already connected with this user',
+        });
+      }
+
+      if (existing.status === 'pending') {
+        if (existing.requester_id === currentUserId) {
+          return res.status(400).json({
+            success: false,
+            message: 'Connection request already sent',
+          });
+        }
+
+        return res.status(400).json({
+          success: false,
+          message: 'This user has already sent you a connection request',
+        });
+      }
+    }
+
+    const connection = await Connection.createRequest(currentUserId, targetUserId);
+
+    res.status(201).json({
+      success: true,
+      message: 'Connection request sent',
+      connection,
+    });
+  } catch (error) {
+    console.error('Send connection request error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Accept connection request
+const acceptConnectionRequest = async (req, res) => {
+  try {
+    const validated = await validateTargetUser(req, res);
+    if (!validated) return;
+    const { currentUserId: addresseeId, targetUserId: requesterId } = validated;
+
+    // Check blocks
+    const allowed = await ensureNotBlockedEitherWay(addresseeId, requesterId, res);
+    if (!allowed) return;
+
+    // Accept the pending request
+    const connection = await Connection.acceptRequest(requesterId, addresseeId);
+    if (!connection) {
+      return res.status(404).json({
+        success: false,
+        message: 'No pending connection request from this user',
+      });
+    }
+
+    // Auto-follow both ways (idempotent)
+    await Promise.all([
+      Follow.follow(addresseeId, requesterId),
+      Follow.follow(requesterId, addresseeId),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: 'Connection request accepted',
+      connection,
+    });
+  } catch (error) {
+    console.error('Accept connection request error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Decline connection request
+const declineConnectionRequest = async (req, res) => {
+  try {
+    const validated = await validateTargetUser(req, res);
+    if (!validated) return;
+    const { currentUserId: addresseeId, targetUserId: requesterId } = validated;
+
+    // Check existing connection
+    const connection = await Connection.findConnection(requesterId, addresseeId);
+    if (!connection || connection.status !== 'pending' || connection.requester_id !== requesterId) {
+      return res.status(404).json({
+        success: false,
+        message: 'No pending connection request from this user',
+      });
+    }
+
+    await Connection.removeConnection(requesterId, addresseeId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Connection request declined',
+    });
+  } catch (error) {
+    console.error('Decline connection request error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Remove connection or cancel outgoing request
+const removeConnectionHandler = async (req, res) => {
+  try {
+    const validated = await validateTargetUser(req, res);
+    if (!validated) return;
+    const { currentUserId, targetUserId } = validated;
+
+    const connection = await Connection.findConnection(currentUserId, targetUserId);
+    if (!connection) {
+      return res.status(404).json({
+        success: false,
+        message: 'No connection or pending request found',
+      });
+    }
+
+    // If pending, only requester can cancel
+    if (connection.status === 'pending' && connection.requester_id !== currentUserId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only the requester can cancel a pending connection',
+      });
+    }
+
+    await Connection.removeConnection(currentUserId, targetUserId);
+
+    res.status(200).json({
+      success: true,
+      message: connection.status === 'pending'
+        ? 'Connection request cancelled'
+        : 'Connection removed',
+    });
+  } catch (error) {
+    console.error('Remove connection error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// List my connections
+const listMyConnections = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const status = req.query.status || 'connected';
+
+    const connections = await Connection.findByUserId(userId, status);
+
+    res.status(200).json({
+      success: true,
+      data: connections,
+    });
+  } catch (error) {
+    console.error('List connections error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// List incoming connection requests
+const listIncomingConnectionRequests = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const requests = await Connection.findPendingRequests(userId);
+
+    res.status(200).json({
+      success: true,
+      data: requests,
+    });
+  } catch (error) {
+    console.error('List incoming connection requests error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// List outgoing connection requests
+const listOutgoingConnectionRequests = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const requests = await Connection.findOutgoingRequests(userId);
+
+    res.status(200).json({
+      success: true,
+      data: requests,
+    });
+  } catch (error) {
+    console.error('List outgoing connection requests error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Follow a user
+const followUser = async (req, res) => {
+  try {
+    const validated = await validateTargetUser(req, res);
+    if (!validated) return;
+    const { currentUserId, targetUserId } = validated;
+
+    // Check blocks
+    const allowed = await ensureNotBlockedEitherWay(currentUserId, targetUserId, res);
+    if (!allowed) return;
+
+    const follow = await Follow.follow(currentUserId, targetUserId);
+
+    res.status(201).json({
+      success: true,
+      message: 'Now following user',
+      follow,
+    });
+  } catch (error) {
+    console.error('Follow user error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Unfollow a user
+const unfollowUser = async (req, res) => {
+  try {
+    const validated = await validateTargetUser(req, res);
+    if (!validated) return;
+    const { currentUserId, targetUserId } = validated;
+
+    await Follow.unfollow(currentUserId, targetUserId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Unfollowed user',
+    });
+  } catch (error) {
+    console.error('Unfollow user error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// List followers of a user
+const listFollowers = async (req, res) => {
+  try {
+    const targetUserId = parseTargetUserId(req, res);
+    if (targetUserId === null) return;
+
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
+
+    const followers = await Follow.findFollowers(targetUserId, limit, offset);
+
+    res.status(200).json({
+      success: true,
+      data: followers,
+      pagination: {
+        limit,
+        offset,
+        hasMore: followers.length === limit,
+      },
+    });
+  } catch (error) {
+    console.error('List followers error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// List users that a user is following
+const listFollowing = async (req, res) => {
+  try {
+    const targetUserId = parseTargetUserId(req, res);
+    if (targetUserId === null) return;
+
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
+
+    const following = await Follow.findFollowing(targetUserId, limit, offset);
+
+    res.status(200).json({
+      success: true,
+      data: following,
+      pagination: {
+        limit,
+        offset,
+        hasMore: following.length === limit,
+      },
+    });
+  } catch (error) {
+    console.error('List following error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Block a user (hard block)
+const blockUserHandler = async (req, res) => {
+  try {
+    const validated = await validateTargetUser(req, res);
+    if (!validated) return;
+    const { currentUserId, targetUserId } = validated;
+
+    // Create block (idempotent)
+    await Block.blockUser(currentUserId, targetUserId);
+
+    // Remove any existing connections and follows in both directions
+    await Promise.all([
+      Connection.removeConnection(currentUserId, targetUserId),
+      Follow.unfollow(currentUserId, targetUserId),
+      Follow.unfollow(targetUserId, currentUserId),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: 'User blocked successfully',
+    });
+  } catch (error) {
+    console.error('Block user error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Unblock a user
+const unblockUserHandler = async (req, res) => {
+  try {
+    const validated = await validateTargetUser(req, res);
+    if (!validated) return;
+    const { currentUserId, targetUserId } = validated;
+
+    await Block.unblockUser(currentUserId, targetUserId);
+
+    res.status(200).json({
+      success: true,
+      message: 'User unblocked successfully',
+    });
+  } catch (error) {
+    console.error('Unblock user error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// List users current user has blocked
+const listBlockedUsers = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
+
+    const blocked = await Block.findBlockedByUser(userId, limit, offset);
+
+    res.status(200).json({
+      success: true,
+      data: blocked,
+      pagination: {
+        limit,
+        offset,
+        hasMore: blocked.length === limit,
+      },
+    });
+  } catch (error) {
+    console.error('List blocked users error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
 module.exports = {
   getMyProfile,
   getUserProfile,
@@ -1050,4 +1580,18 @@ module.exports = {
   getCompleteProfile,
   updateCompleteProfile,
   validateProfileUpdate,
+  sendConnectionRequest,
+  acceptConnectionRequest,
+  declineConnectionRequest,
+  removeConnectionHandler,
+  listMyConnections,
+  listIncomingConnectionRequests,
+  listOutgoingConnectionRequests,
+  followUser,
+  unfollowUser,
+  listFollowers,
+  listFollowing,
+  blockUserHandler,
+  unblockUserHandler,
+  listBlockedUsers,
 };

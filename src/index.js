@@ -14,6 +14,7 @@ const { initializeMedicalPublicationsTable } = require('./models/MedicalPublicat
 const { initializeMedicalProjectsTable } = require('./models/MedicalProject');
 const { initializeAwardsTable } = require('./models/Award');
 const { initializeConnectionsTable } = require('./models/Connection');
+const { initializeBlocksTable } = require('./models/Block');
 const { initializeRecommendationsTable } = require('./models/Recommendation');
 const { initializeFollowsTable } = require('./models/Follow');
 const { initializeConversationsTable } = require('./models/Conversation');
@@ -80,6 +81,7 @@ const startServer = async () => {
       
       // Network and social tables
       await initializeConnectionsTable();
+      await initializeBlocksTable();
       await initializeRecommendationsTable();
       await initializeFollowsTable();
       await initializeConversationsTable();
