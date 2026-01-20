@@ -79,6 +79,14 @@ const addIndexes = async () => {
       CREATE INDEX IF NOT EXISTS idx_follows_created_at ON follows(created_at DESC);
     `);
 
+    // Blocks table indexes
+    logger.info('Creating indexes on blocks table...');
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_blocks_blocker_id ON blocks(blocker_id);
+      CREATE INDEX IF NOT EXISTS idx_blocks_blocked_id ON blocks(blocked_id);
+      CREATE INDEX IF NOT EXISTS idx_blocks_created_at ON blocks(created_at DESC);
+    `);
+
     // Notifications table indexes
     logger.info('Creating indexes on notifications table...');
     await client.query(`

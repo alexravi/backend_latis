@@ -28,6 +28,51 @@ const options = {
         },
       },
       schemas: {
+        Relationship: {
+          type: 'object',
+          properties: {
+            isConnected: { type: 'boolean', example: false },
+            connectionStatus: { type: 'string', nullable: true, enum: ['pending', 'connected'], example: 'pending' },
+            connectionRequesterId: { type: 'integer', nullable: true, example: 12 },
+            connectionPending: { type: 'boolean', example: true },
+            iFollowThem: { type: 'boolean', example: false },
+            theyFollowMe: { type: 'boolean', example: false },
+            iBlocked: { type: 'boolean', example: false },
+            blockedMe: { type: 'boolean', example: false },
+          },
+          description: 'Relationship flags between the authenticated viewer and the target user',
+        },
+        Connection: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer', example: 1 },
+            requester_id: { type: 'integer', example: 10 },
+            addressee_id: { type: 'integer', example: 20 },
+            status: { type: 'string', enum: ['pending', 'connected'], example: 'pending' },
+            requested_at: { type: 'string', format: 'date-time' },
+            accepted_at: { type: 'string', format: 'date-time', nullable: true },
+            created_at: { type: 'string', format: 'date-time' },
+            updated_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        Follow: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer', example: 1 },
+            follower_id: { type: 'integer', example: 10 },
+            following_id: { type: 'integer', example: 20 },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        Block: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer', example: 1 },
+            blocker_id: { type: 'integer', example: 10 },
+            blocked_id: { type: 'integer', example: 20 },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
         User: {
           type: 'object',
           properties: {
@@ -47,6 +92,9 @@ const options = {
             last_name: {
               type: 'string',
               description: 'User last name',
+            },
+            relationship: {
+              $ref: '#/components/schemas/Relationship',
             },
           },
         },
