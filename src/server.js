@@ -113,6 +113,7 @@ const commentRoutes = require('./routes/commentRoutes');
 const statusRoutes = require('./routes/statusRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const searchRoutes = require('./routes/searchRoutes');
+const messageRoutes = require('./routes/messageRoutes');
 
 // V1 API routes (versioned)
 // userLimiter is applied within v1Routes router (after authentication in route handlers)
@@ -138,6 +139,7 @@ app.use('/api/posts', userLimiter, postRoutes);
 app.use('/api/comments', userLimiter, commentRoutes);
 app.use('/api/upload', userLimiter, uploadRoutes);
 app.use('/api/search', userLimiter, searchRoutes);
+app.use('/api/messages', userLimiter, messageRoutes);
 
 // Auth routes use authLimiter (applied in route file)
 app.use('/api/auth', authRoutes);

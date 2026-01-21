@@ -24,6 +24,10 @@ const EVENTS = {
   VOTE_REMOVED: 'vote:removed',
   
   NOTIFICATION_NEW: 'notification:new',
+  
+  MESSAGE_CREATED: 'message:created',
+  MESSAGE_UPDATED: 'message:updated',
+  MESSAGE_DELETED: 'message:deleted',
 };
 
 // Helper functions to emit events with standardized payloads
@@ -183,6 +187,44 @@ const emitNotificationNew = (notification) => {
   });
 };
 
+// Message events
+const emitMessageCreated = (message, conversationId, senderId, recipientId) => {
+  eventService.emit(EVENTS.MESSAGE_CREATED, {
+    type: EVENTS.MESSAGE_CREATED,
+    timestamp: new Date().toISOString(),
+    data: {
+      message_id: message.id,
+      conversation_id: conversationId,
+      sender_id: senderId,
+      recipient_id: recipientId,
+    },
+  });
+};
+
+const emitMessageUpdated = (message, conversationId) => {
+  eventService.emit(EVENTS.MESSAGE_UPDATED, {
+    type: EVENTS.MESSAGE_UPDATED,
+    timestamp: new Date().toISOString(),
+    data: {
+      message_id: message.id,
+      conversation_id: conversationId,
+      sender_id: message.sender_id,
+    },
+  });
+};
+
+const emitMessageDeleted = (message, conversationId) => {
+  eventService.emit(EVENTS.MESSAGE_DELETED, {
+    type: EVENTS.MESSAGE_DELETED,
+    timestamp: new Date().toISOString(),
+    data: {
+      message_id: message.id,
+      conversation_id: conversationId,
+      sender_id: message.sender_id,
+    },
+  });
+};
+
 module.exports = {
   eventService,
   EVENTS,
@@ -206,4 +248,9 @@ module.exports = {
   
   // Notification event emitters
   emitNotificationNew,
+  
+  // Message event emitters
+  emitMessageCreated,
+  emitMessageUpdated,
+  emitMessageDeleted,
 };

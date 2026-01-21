@@ -19,6 +19,8 @@ const { initializeRecommendationsTable } = require('./models/Recommendation');
 const { initializeFollowsTable } = require('./models/Follow');
 const { initializeConversationsTable } = require('./models/Conversation');
 const { initializeMessagesTable } = require('./models/Message');
+const { initializeMessageReactionsTable } = require('./models/MessageReaction');
+const { initializeUserOnlineStatusTable } = require('./models/UserOnlineStatus');
 const { initializeMedicalGroupsTable } = require('./models/MedicalGroup');
 const { initializeGroupMembershipsTable } = require('./models/GroupMembership');
 const { initializePostsTable } = require('./models/Post');
@@ -86,6 +88,8 @@ const startServer = async () => {
       await initializeFollowsTable();
       await initializeConversationsTable();
       await initializeMessagesTable();
+      await initializeMessageReactionsTable();
+      await initializeUserOnlineStatusTable();
       
       // Group tables
       await initializeMedicalGroupsTable();

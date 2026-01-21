@@ -2,6 +2,7 @@
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { hashPassword, comparePassword, generateToken } = require('../utils/auth');
+const { validateUsername, sanitizeUsername, isUsernameAvailable } = require('../utils/userUtils');
 
 // Helper function to mask email addresses for logging
 const maskEmail = (email) => {
@@ -35,6 +36,23 @@ const validateSignUp = [
     .withMessage('Last name is required')
     .isLength({ min: 1, max: 100 })
     .withMessage('Last name must be between 1 and 100 characters'),
+  body('username')
+    .optional()
+    .trim()
+    .custom(async (value) => {
+      if (value) {
+        const validation = validateUsername(value);
+        if (!validation.valid) {
+          throw new Error(validation.error);
+        }
+        const sanitized = sanitizeUsername(value);
+        const available = await isUsernameAvailable(sanitized);
+        if (!available) {
+          throw new Error('Username is already taken');
+        }
+      }
+      return true;
+    }),
 ];
 
 const validateSignIn = [
@@ -65,7 +83,7 @@ const signUp = async (req, res) => {
       });
     }
 
-    const { email, password, first_name, last_name } = req.body;
+    const { email, password, first_name, last_name, username } = req.body;
 
     // Check if user already exists
     console.log(`[${timestamp}] [AUTH] [SIGNUP] Checking if user exists - Email: ${maskEmail(email)}`);
@@ -78,14 +96,34 @@ const signUp = async (req, res) => {
       });
     }
 
+    // Validate and sanitize username if provided
+    let finalUsername = null;
+    if (username) {
+      const validation = validateUsername(username);
+      if (!validation.valid) {
+        return res.status(400).json({
+          success: false,
+          message: validation.error,
+        });
+      }
+      finalUsername = sanitizeUsername(username);
+      const available = await isUsernameAvailable(finalUsername);
+      if (!available) {
+        return res.status(409).json({
+          success: false,
+          message: 'Username is already taken',
+        });
+      }
+    }
+
     // Hash password
     console.log(`[${timestamp}] [AUTH] [SIGNUP] Hashing password for - Email: ${maskEmail(email)}`);
     const hashedPassword = await hashPassword(password);
 
     // Create user
-    console.log(`[${timestamp}] [AUTH] [SIGNUP] Creating new user - Email: ${maskEmail(email)}, Name: ${first_name} ${last_name}`);
-    const user = await User.create(email, hashedPassword, first_name, last_name);
-    console.log(`[${timestamp}] [AUTH] [SIGNUP] User created successfully - UserId: ${user.id}, Email: ${maskEmail(email)}`);
+    console.log(`[${timestamp}] [AUTH] [SIGNUP] Creating new user - Email: ${maskEmail(email)}, Name: ${first_name} ${last_name}, Username: ${finalUsername || 'auto-generated'}`);
+    const user = await User.create(email, hashedPassword, first_name, last_name, finalUsername);
+    console.log(`[${timestamp}] [AUTH] [SIGNUP] User created successfully - UserId: ${user.id}, Email: ${maskEmail(email)}, Username: ${user.username}`);
 
     // Generate JWT token
     console.log(`[${timestamp}] [AUTH] [SIGNUP] Generating JWT token - UserId: ${user.id}, Email: ${maskEmail(email)}`);
@@ -102,6 +140,7 @@ const signUp = async (req, res) => {
       user: {
         id: user.id,
         email: user.email,
+        username: user.username,
         first_name: user.first_name,
         last_name: user.last_name,
       },
