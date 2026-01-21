@@ -4,6 +4,8 @@ const { createAdapter } = require('@socket.io/redis-adapter');
 const { authenticateSocket } = require('../middleware/socketAuth');
 const { eventService, EVENTS } = require('./eventService');
 const { redisClient } = require('../config/redis');
+const UserOnlineStatus = require('../models/UserOnlineStatus');
+const Message = require('../models/Message');
 
 let io = null;
 
@@ -65,11 +67,25 @@ const initializeSocketIO = async (httpServer) => {
   io.use(authenticateSocket);
 
   // Connection handler
-  io.on('connection', (socket) => {
+  io.on('connection', async (socket) => {
     console.log(`✅ Socket connected: user ${socket.user.id}`);
 
     // Join user's personal room for notifications
     socket.join(`user:${socket.user.id}`);
+
+    // Update user online status
+    try {
+      await UserOnlineStatus.setOnline(socket.user.id);
+      
+      // Emit online status to user's connections (if needed)
+      // This could be enhanced to notify specific users
+      socket.broadcast.emit('user:online', {
+        user_id: socket.user.id,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Error setting user online:', error.message);
+    }
 
     // Join post room to receive updates
     socket.on('post:join', (postId) => {
@@ -83,9 +99,110 @@ const initializeSocketIO = async (httpServer) => {
       console.log(`User ${socket.user.id} left post room: ${postId}`);
     });
 
+    // Join conversation room
+    socket.on('conversation:join', (conversationId) => {
+      socket.join(`conversation:${conversationId}`);
+      console.log(`User ${socket.user.id} joined conversation room: ${conversationId}`);
+    });
+
+    // Leave conversation room
+    socket.on('conversation:leave', (conversationId) => {
+      socket.leave(`conversation:${conversationId}`);
+      console.log(`User ${socket.user.id} left conversation room: ${conversationId}`);
+    });
+
+    // Typing indicator - start typing
+    socket.on('message:typing:start', (data) => {
+      const { conversation_id } = data;
+      if (conversation_id) {
+        socket.to(`conversation:${conversation_id}`).emit('typing:status', {
+          conversation_id,
+          user_id: socket.user.id,
+          typing: true,
+        });
+      }
+    });
+
+    // Typing indicator - stop typing
+    socket.on('message:typing:stop', (data) => {
+      const { conversation_id } = data;
+      if (conversation_id) {
+        socket.to(`conversation:${conversation_id}`).emit('typing:status', {
+          conversation_id,
+          user_id: socket.user.id,
+          typing: false,
+        });
+      }
+    });
+
+    // Message delivery confirmation
+    socket.on('message:delivered', async (data) => {
+      const { message_id } = data;
+      if (message_id) {
+        try {
+          // Mark message as delivered
+          const message = await Message.markAsDelivered(message_id);
+          if (message) {
+            // Emit delivery confirmation to sender
+            io.to(`user:${message.sender_id}`).emit('message:delivered', {
+              message_id,
+              conversation_id: message.conversation_id,
+              delivered_at: message.delivered_at,
+            });
+          }
+        } catch (error) {
+          console.error('Error marking message as delivered:', error.message);
+        }
+      }
+    });
+
+    // Periodic last seen update (every 30 seconds while connected)
+    const lastSeenInterval = setInterval(async () => {
+      try {
+        await UserOnlineStatus.updateLastSeen(socket.user.id);
+      } catch (error) {
+        console.error('Error updating last seen:', error.message);
+      }
+    }, 30000); // 30 seconds
+
     // Disconnect handler
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       console.log(`❌ Socket disconnected: ${socket.user.id}`);
+      
+      // Clear interval
+      clearInterval(lastSeenInterval);
+      
+      // Small delay to check if reconnection happens
+      setTimeout(async () => {
+        // Check if user has other active connections
+        try {
+          const socketsInRoom = await io.in(`user:${socket.user.id}`).fetchSockets();
+          
+          if (socketsInRoom.length === 0) {
+            // No other connections, set user offline
+            try {
+              await UserOnlineStatus.setOffline(socket.user.id);
+              
+              // Emit offline status
+              io.emit('user:offline', {
+                user_id: socket.user.id,
+                timestamp: new Date().toISOString(),
+              });
+            } catch (error) {
+              console.error('Error setting user offline:', error.message);
+            }
+          } else {
+            // User still has other connections, just update last seen
+            try {
+              await UserOnlineStatus.updateLastSeen(socket.user.id);
+            } catch (error) {
+              console.error('Error updating last seen on disconnect:', error.message);
+            }
+          }
+        } catch (error) {
+          console.error('Error checking sockets on disconnect:', error.message);
+        }
+      }, 1000); // 1 second delay
     });
 
     // Error handler
@@ -212,6 +329,46 @@ const setupEventListeners = () => {
       io.to(`user:${event.data.user_id}`).emit('notification:new', event);
     }
   });
+
+  // Message created
+  eventService.on(EVENTS.MESSAGE_CREATED, (event) => {
+    if (io) {
+      // Send to conversation room and recipient's user room
+      io.to(`conversation:${event.data.conversation_id}`).emit('message:new', event);
+      io.to(`user:${event.data.recipient_id}`).emit('message:new', event);
+    }
+  });
+
+  // Message updated
+  eventService.on(EVENTS.MESSAGE_UPDATED, (event) => {
+    if (io) {
+      io.to(`conversation:${event.data.conversation_id}`).emit('message:updated', event);
+    }
+  });
+
+  // Message deleted
+  eventService.on(EVENTS.MESSAGE_DELETED, (event) => {
+    if (io) {
+      io.to(`conversation:${event.data.conversation_id}`).emit('message:deleted', event);
+    }
+  });
+};
+
+// Mark message as delivered when it reaches recipient's device
+const handleMessageDelivered = async (messageId, recipientId) => {
+  try {
+    const message = await Message.markAsDelivered(messageId);
+    if (message && io) {
+      // Notify sender that message was delivered
+      io.to(`user:${message.sender_id}`).emit('message:delivered', {
+        message_id: messageId,
+        conversation_id: message.conversation_id,
+        delivered_at: message.delivered_at,
+      });
+    }
+  } catch (error) {
+    console.error('Error handling message delivery:', error.message);
+  }
 };
 
 // Get Socket.io instance
@@ -246,4 +403,5 @@ module.exports = {
   emitToRoom,
   emitToUser,
   broadcast,
+  handleMessageDelivered,
 };

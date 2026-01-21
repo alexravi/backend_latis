@@ -66,6 +66,7 @@ Stored in the `users` table. Updates basic profile information.
 |-------|------|----------|------------|-------------|---------|
 | `first_name` | string | **Yes** | 100 | User's first name | "John" |
 | `last_name` | string | **Yes** | 100 | User's last name | "Smith" |
+| `username` | string | No | 30 | Unique username/handle (auto-generated if not provided) | "johndoe" |
 | `headline` | string | No | 255 | Professional headline or tagline | "Cardiologist at Mayo Clinic" |
 | `summary` | string | No | 2000 | Professional summary or bio | "Experienced cardiologist with 10+ years..." |
 | `location` | string | No | 255 | Location (city, state, country) | "New York, NY, USA" |
@@ -73,6 +74,13 @@ Stored in the `users` table. Updates basic profile information.
 | `website` | string | No | 255 | Personal or professional website URL | "https://drjohnsmith.com" |
 | `specialization` | string | No | 255 | Medical specialization | "Cardiology" |
 | `subspecialization` | string | No | 255 | Medical subspecialization | "Interventional Cardiology" |
+
+**Username Field:**
+- `username` is optional and will be **auto-generated** if not provided
+- Format: 3-30 characters, alphanumeric + underscores/hyphens
+- Must start and end with letter or number
+- Case-insensitive (stored in lowercase)
+- Auto-generated usernames follow pattern: `firstname_lastname_id` or variations
 
 **Note:** The following fields are **automatically derived** from `experiences` and `education` arrays and should **not** be provided in the request:
 
@@ -102,6 +110,7 @@ You do not need to provide these fields - they will be computed automatically.
   "user": {
     "first_name": "John",
     "last_name": "Smith",
+    "username": "johndoe",  // Optional - auto-generated if not provided
     "headline": "Cardiologist specializing in interventional procedures",
     "summary": "Board-certified cardiologist with over 10 years of experience...",
     "location": "New York, NY, USA",

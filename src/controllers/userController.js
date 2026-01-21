@@ -4,6 +4,7 @@ const { withTransaction } = require('../config/database');
 const User = require('../models/User');
 const Profile = require('../models/Profile');
 const ProfileSettings = require('../models/ProfileSettings');
+const { validateUsername, sanitizeUsername, isUsernameAvailable, generateUsername } = require('../utils/userUtils');
 const MedicalExperience = require('../models/MedicalExperience');
 const MedicalEducation = require('../models/MedicalEducation');
 const MedicalSkill = require('../models/MedicalSkill');
@@ -15,6 +16,7 @@ const Award = require('../models/Award');
 const Connection = require('../models/Connection');
 const Follow = require('../models/Follow');
 const Block = require('../models/Block');
+const UserOnlineStatus = require('../models/UserOnlineStatus');
 const { normalizeSkills } = require('../utils/skillUtils');
 const { validateProfileData } = require('../utils/profileValidation');
 const { deriveProfileFields } = require('../utils/profileDerivation');
@@ -198,17 +200,36 @@ const getMyProfile = async (req, res) => {
   }
 };
 
-// Get user profile by ID
+// Get user profile by ID or username
 const getUserProfile = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = parseInt(id);
+    let user = null;
+    let userId = null;
 
-    if (isNaN(userId)) {
-      return res.status(400).json({
+    // Try to parse as ID first
+    const parsedId = parseInt(id);
+    if (!isNaN(parsedId)) {
+      // It's a numeric ID
+      userId = parsedId;
+      user = await User.findById(userId);
+    } else {
+      // It might be a username
+      user = await User.findByUsername(id);
+      if (user) {
+        userId = user.id;
+      }
+    }
+
+    if (!user) {
+      return res.status(404).json({
         success: false,
-        message: 'Invalid user ID',
+        message: 'User not found',
       });
+    }
+
+    if (!userId) {
+      userId = user.id;
     }
 
     const viewerId = req.user ? req.user.id : null;
@@ -266,8 +287,10 @@ const getUserProfile = async (req, res) => {
       });
     }
 
-    // Get user data
-    const user = await User.findById(userId);
+    // Get user data (we already have user from earlier lookup, but ensure it's fresh from DB)
+    if (!user) {
+      user = await User.findById(userId);
+    }
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -339,6 +362,47 @@ const getUserProfile = async (req, res) => {
   }
 };
 
+// Check username availability
+const checkUsernameAvailability = async (req, res) => {
+  try {
+    const { username } = req.params;
+
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username is required',
+      });
+    }
+
+    // Validate format
+    const validation = validateUsername(username);
+    if (!validation.valid) {
+      return res.status(400).json({
+        success: false,
+        available: false,
+        message: validation.error,
+      });
+    }
+
+    // Check availability
+    const sanitized = sanitizeUsername(username);
+    const available = await isUsernameAvailable(sanitized, req.user ? req.user.id : null);
+
+    res.status(200).json({
+      success: true,
+      available,
+      username: sanitized,
+      message: available ? 'Username is available' : 'Username is already taken',
+    });
+  } catch (error) {
+    console.error('Check username availability error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
 // Update current user's profile
 const updateMyProfile = async (req, res) => {
   try {
@@ -353,6 +417,17 @@ const updateMyProfile = async (req, res) => {
 
     const userId = req.user.id;
     const profileData = req.body;
+
+    // If username is being updated, validate it separately
+    if (profileData.username !== undefined) {
+      const validation = validateUsername(profileData.username);
+      if (!validation.valid) {
+        return res.status(400).json({
+          success: false,
+          message: validation.error,
+        });
+      }
+    }
 
     // Update user profile
     const updatedUser = await User.updateProfile(userId, profileData);
@@ -379,6 +454,15 @@ const updateMyProfile = async (req, res) => {
     });
   } catch (error) {
     console.error('Update profile error:', error.message);
+    
+    // Handle username already taken error
+    if (error.message && error.message.includes('already taken')) {
+      return res.status(409).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -612,6 +696,57 @@ const createCompleteProfile = async (req, res) => {
       delete cleanUserData[field];
     });
 
+    // Handle username: auto-generate if missing
+    if (!existingUser.username) {
+      if (cleanUserData.username) {
+        // Validate username if provided
+        const validation = validateUsername(cleanUserData.username);
+        if (!validation.valid) {
+          return res.status(400).json({
+            success: false,
+            message: validation.error,
+          });
+        }
+        const sanitized = sanitizeUsername(cleanUserData.username);
+        const available = await isUsernameAvailable(sanitized, userId);
+        if (!available) {
+          return res.status(409).json({
+            success: false,
+            message: 'Username is already taken',
+          });
+        }
+        cleanUserData.username = sanitized;
+      } else {
+        // Auto-generate username if not provided
+        const firstName = cleanUserData.first_name || existingUser.first_name || '';
+        const lastName = cleanUserData.last_name || existingUser.last_name || '';
+        const generatedUsername = await generateUsername(firstName, lastName, userId);
+        cleanUserData.username = generatedUsername;
+        console.log(`[${timestamp}] [PROFILE] [CREATE_COMPLETE] Auto-generated username - UserId: ${userId}, Username: ${generatedUsername}`);
+      }
+    } else if (cleanUserData.username) {
+      // User already has username, validate if they want to change it
+      const validation = validateUsername(cleanUserData.username);
+      if (!validation.valid) {
+        return res.status(400).json({
+          success: false,
+          message: validation.error,
+        });
+      }
+      const sanitized = sanitizeUsername(cleanUserData.username);
+      if (sanitized !== existingUser.username) {
+        // Username changed, check availability
+        const available = await isUsernameAvailable(sanitized, userId);
+        if (!available) {
+          return res.status(409).json({
+            success: false,
+            message: 'Username is already taken',
+          });
+        }
+        cleanUserData.username = sanitized;
+      }
+    }
+
     // Execute all operations within a transaction
     const result = await withTransaction(async (client) => {
       // Update user profile (without derived fields)
@@ -793,8 +928,62 @@ const updateCompleteProfile = async (req, res) => {
 
     // Update user profile
     if (userData) {
-      console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Updating user profile - UserId: ${userId}, Fields: ${Object.keys(userData).join(', ')}`);
-      await User.updateProfile(userId, userData);
+      const existingUser = await User.findById(userId);
+      const cleanUserData = { ...userData };
+
+      // Handle username: auto-generate if missing
+      if (!existingUser.username) {
+        if (cleanUserData.username) {
+          // Validate username if provided
+          const validation = validateUsername(cleanUserData.username);
+          if (!validation.valid) {
+            return res.status(400).json({
+              success: false,
+              message: validation.error,
+            });
+          }
+          const sanitized = sanitizeUsername(cleanUserData.username);
+          const available = await isUsernameAvailable(sanitized, userId);
+          if (!available) {
+            return res.status(409).json({
+              success: false,
+              message: 'Username is already taken',
+            });
+          }
+          cleanUserData.username = sanitized;
+        } else {
+          // Auto-generate username if not provided and user doesn't have one
+          const firstName = cleanUserData.first_name || existingUser.first_name || '';
+          const lastName = cleanUserData.last_name || existingUser.last_name || '';
+          const generatedUsername = await generateUsername(firstName, lastName, userId);
+          cleanUserData.username = generatedUsername;
+          console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Auto-generated username - UserId: ${userId}, Username: ${generatedUsername}`);
+        }
+      } else if (cleanUserData.username) {
+        // User already has username, validate if they want to change it
+        const validation = validateUsername(cleanUserData.username);
+        if (!validation.valid) {
+          return res.status(400).json({
+            success: false,
+            message: validation.error,
+          });
+        }
+        const sanitized = sanitizeUsername(cleanUserData.username);
+        if (sanitized !== existingUser.username) {
+          // Username changed, check availability
+          const available = await isUsernameAvailable(sanitized, userId);
+          if (!available) {
+            return res.status(409).json({
+              success: false,
+              message: 'Username is already taken',
+            });
+          }
+          cleanUserData.username = sanitized;
+        }
+      }
+
+      console.log(`[${timestamp}] [PROFILE] [UPDATE_COMPLETE] Updating user profile - UserId: ${userId}, Fields: ${Object.keys(cleanUserData).join(', ')}`);
+      await User.updateProfile(userId, cleanUserData);
     }
 
     // Update extended profile
@@ -1570,9 +1759,84 @@ const listBlockedUsers = async (req, res) => {
   }
 };
 
+// Get user online status
+const getUserStatus = async (req, res) => {
+  try {
+    const targetUserId = parseInt(req.params.id, 10);
+    
+    if (isNaN(targetUserId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user ID',
+      });
+    }
+
+    const status = await UserOnlineStatus.getStatus(targetUserId);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        user_id: targetUserId,
+        ...status,
+      },
+    });
+  } catch (error) {
+    console.error('Get user status error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Update own online status (manual status updates)
+const updateMyStatus = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { is_online } = req.body;
+
+    if (typeof is_online !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'is_online must be a boolean',
+      });
+    }
+
+    let status;
+    if (is_online) {
+      status = await UserOnlineStatus.setOnline(userId);
+    } else {
+      status = await UserOnlineStatus.setOffline(userId);
+    }
+
+    // Emit status update
+    const { getIO } = require('../services/socketService');
+    const io = getIO();
+    if (io) {
+      io.emit(is_online ? 'user:online' : 'user:offline', {
+        user_id: userId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Status updated successfully',
+      data: status,
+    });
+  } catch (error) {
+    console.error('Update my status error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
 module.exports = {
   getMyProfile,
   getUserProfile,
+  checkUsernameAvailability,
   updateMyProfile,
   updateExtendedProfile,
   createProfile,
@@ -1594,4 +1858,6 @@ module.exports = {
   blockUserHandler,
   unblockUserHandler,
   listBlockedUsers,
+  getUserStatus,
+  updateMyStatus,
 };

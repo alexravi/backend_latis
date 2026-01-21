@@ -3,7 +3,7 @@ const winston = require('winston');
 const DailyRotateFile = require('winston-daily-rotate-file');
 const path = require('path');
 
-// Define log format
+// Define log format (for file logs - always JSON)
 const logFormat = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.errors({ stack: true }),
@@ -11,17 +11,139 @@ const logFormat = winston.format.combine(
   winston.format.json()
 );
 
-// Console format for development
-const consoleFormat = winston.format.combine(
-  winston.format.colorize(),
-  winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-  winston.format.printf(({ timestamp, level, message, ...metadata }) => {
-    let msg = `${timestamp} [${level}]: ${message}`;
-    if (Object.keys(metadata).length > 0) {
-      msg += ` ${JSON.stringify(metadata)}`;
+// Beautiful console format for human readability
+const createBeautifulConsoleFormat = () => {
+  // Color helper
+  const colors = {
+    reset: '\x1b[0m',
+    bright: '\x1b[1m',
+    dim: '\x1b[2m',
+    red: '\x1b[31m',
+    green: '\x1b[32m',
+    yellow: '\x1b[33m',
+    blue: '\x1b[34m',
+    magenta: '\x1b[35m',
+    cyan: '\x1b[36m',
+    white: '\x1b[37m',
+  };
+
+  return winston.format.printf(({ timestamp, level, message, ...metadata }) => {
+    // Parse timestamp to readable format
+    const time = new Date(timestamp).toLocaleTimeString('en-US', { 
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+
+    // Level icons and colors
+    const levelConfig = {
+      error: { icon: '❌', color: colors.red, label: 'ERROR' },
+      warn: { icon: '⚠️ ', color: colors.yellow, label: 'WARN' },
+      info: { icon: 'ℹ️ ', color: colors.cyan, label: 'INFO' },
+      debug: { icon: '🔍', color: colors.blue, label: 'DEBUG' },
+      verbose: { icon: '📝', color: colors.dim, label: 'VERBOSE' },
+    };
+
+    const config = levelConfig[level] || { icon: '•', color: colors.white, label: level.toUpperCase() };
+    
+    // Special formatting for HTTP requests
+    if (message === 'HTTP Request' && metadata.method && metadata.url) {
+      const statusCode = metadata.statusCode;
+      const methodColors = {
+        GET: colors.cyan,
+        POST: colors.green,
+        PUT: colors.yellow,
+        PATCH: colors.yellow,
+        DELETE: colors.red,
+      };
+      const methodColor = methodColors[metadata.method] || colors.white;
+      
+      // Status code colors
+      let statusColor = colors.green;
+      if (statusCode >= 500) statusColor = colors.red;
+      else if (statusCode >= 400) statusColor = colors.yellow;
+      else if (statusCode >= 300) statusColor = colors.cyan;
+
+      // Format URL (truncate if too long)
+      let url = metadata.url;
+      if (url.length > 60) {
+        url = url.substring(0, 57) + '...';
+      }
+
+      // Build formatted log line
+      let logLine = `${colors.dim}${time}${colors.reset} `;
+      logLine += `${methodColor}${metadata.method.padEnd(6)}${colors.reset} `;
+      logLine += `${statusColor}${statusCode}${colors.reset} `;
+      logLine += `${colors.white}${url.padEnd(63)}${colors.reset} `;
+      logLine += `${colors.dim}${metadata.responseTime || ''}${colors.reset}`;
+      
+      if (metadata.userId) {
+        logLine += ` ${colors.magenta}[User: ${metadata.userId}]${colors.reset}`;
+      }
+
+      return logLine;
     }
-    return msg;
-  })
+
+    // Special formatting for errors
+    if (level === 'error') {
+      let logLine = `${colors.dim}${time}${colors.reset} `;
+      logLine += `${config.color}${config.icon} ${config.label}${colors.reset} `;
+      
+      // Show actual error message if available in metadata
+      const errorMessage = metadata.message || message;
+      logLine += `${colors.bright}${errorMessage}${colors.reset}`;
+      
+      // Add request context if available
+      if (metadata.request) {
+        const req = metadata.request;
+        logLine += ` ${colors.dim}(${req.method} ${req.url})${colors.reset}`;
+      }
+      
+      // Add stack trace if available
+      if (metadata.stack) {
+        logLine += `\n${colors.dim}${metadata.stack}${colors.reset}`;
+      }
+      
+      return logLine;
+    }
+
+    // Default formatting for other logs
+    let logLine = `${colors.dim}${time}${colors.reset} `;
+    logLine += `${config.color}${config.icon} ${config.label}${colors.reset} `;
+    logLine += `${colors.white}${message}${colors.reset}`;
+
+    // Add metadata in a readable way
+    if (Object.keys(metadata).length > 0) {
+      // Filter out internal winston properties
+      const cleanMetadata = { ...metadata };
+      delete cleanMetadata.service;
+      delete cleanMetadata.environment;
+      
+      if (Object.keys(cleanMetadata).length > 0) {
+        // Format metadata nicely
+        const metaStr = Object.entries(cleanMetadata)
+          .map(([key, value]) => {
+            // Truncate long values
+            let val = typeof value === 'object' ? JSON.stringify(value) : String(value);
+            if (val.length > 100) val = val.substring(0, 97) + '...';
+            return `${colors.dim}${key}${colors.reset}${colors.white}=${colors.reset}${colors.cyan}${val}${colors.reset}`;
+          })
+          .join(` ${colors.dim}│${colors.reset} `);
+        logLine += ` ${colors.dim}(${metaStr})${colors.reset}`;
+      }
+    }
+
+    return logLine;
+  });
+};
+
+// Console format with colors and beautiful formatting
+const consoleFormat = winston.format.combine(
+  winston.format.timestamp(),
+  winston.format.errors({ stack: true }),
+  winston.format.splat(),
+  createBeautifulConsoleFormat()
 );
 
 // Create logs directory if it doesn't exist
@@ -36,10 +158,11 @@ if (!fs.existsSync(logsDir)) {
 // Define transports
 const transports = [];
 
-// Console transport (always enabled)
+// Console transport (always enabled) - use beautiful format for console output
+// JSON format is only used for file logs
 transports.push(
   new winston.transports.Console({
-    format: process.env.NODE_ENV === 'production' ? logFormat : consoleFormat,
+    format: consoleFormat, // Always use beautiful format for console
     level: process.env.LOG_LEVEL || 'info',
   })
 );

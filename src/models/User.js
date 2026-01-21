@@ -1,5 +1,6 @@
 // User model and database operations
 const { pool } = require('../config/database');
+const { generateUsername, sanitizeUsername, isUsernameAvailable } = require('../utils/userUtils');
 
 // Initialize users table
 const initializeUsersTable = async () => {
@@ -10,6 +11,7 @@ const initializeUsersTable = async () => {
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
+        username VARCHAR(50) UNIQUE,
         first_name VARCHAR(100) NOT NULL,
         last_name VARCHAR(100) NOT NULL,
         headline VARCHAR(255),
@@ -37,6 +39,7 @@ const initializeUsersTable = async () => {
     // Add missing columns if they don't exist (for existing tables)
     // For first_name and last_name, we need to add with DEFAULT first, then backfill, then set NOT NULL
     const columnsToAdd = [
+      { name: 'username', type: 'VARCHAR(50)' },
       { name: 'first_name', type: 'VARCHAR(100)', requiresBackfill: true },
       { name: 'last_name', type: 'VARCHAR(100)', requiresBackfill: true },
       { name: 'headline', type: 'VARCHAR(255)' },
@@ -128,6 +131,29 @@ const initializeUsersTable = async () => {
       console.log(`\n✓ All required columns already exist in users table`);
     }
 
+    // Create index on username for fast lookups (only if username column exists)
+    try {
+      const columnCheck = await pool.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' 
+          AND table_name = 'users' 
+          AND column_name = 'username'
+      `);
+      
+      if (columnCheck.rows.length > 0) {
+        // Only create index if username column exists and handle NULL values
+        await pool.query(`
+          CREATE INDEX IF NOT EXISTS idx_users_username 
+          ON users(LOWER(username)) 
+          WHERE username IS NOT NULL
+        `);
+      }
+    } catch (indexError) {
+      // Index might already exist or column doesn't exist yet, ignore
+      console.log('Note: Username index creation skipped (column may not exist yet)');
+    }
+
     console.log('✅ Users table initialized');
   } catch (error) {
     console.error('❌ Error initializing users table:', error.message);
@@ -159,6 +185,22 @@ const findById = async (id) => {
   }
 };
 
+// Find user by username
+const findByUsername = async (username) => {
+  try {
+    const sanitized = sanitizeUsername(username);
+    if (!sanitized) {
+      return null;
+    }
+    const query = 'SELECT * FROM users WHERE LOWER(username) = $1';
+    const result = await pool.query(query, [sanitized]);
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('Error finding user by username:', error.message);
+    throw error;
+  }
+};
+
 // Update user profile
 const updateProfile = async (id, profileData, client = null) => {
   try {
@@ -168,12 +210,28 @@ const updateProfile = async (id, profileData, client = null) => {
     let paramCount = 1;
 
     const allowedFields = [
-      'first_name', 'last_name', 'headline', 'summary', 'profile_image_url',
+      'username', 'first_name', 'last_name', 'headline', 'summary', 'profile_image_url',
       'cover_image_url', 'location', 'phone', 'website', 'current_role',
       'specialization', 'subspecialization', 'years_of_experience',
       'medical_school_graduation_year', 'residency_completion_year',
       'fellowship_completion_year'
     ];
+
+    // Handle username separately to validate and sanitize
+    if (profileData.username !== undefined) {
+      const sanitized = sanitizeUsername(profileData.username);
+      if (sanitized) {
+        // Check if username is available (excluding current user)
+        const available = await isUsernameAvailable(sanitized, id);
+        if (!available) {
+          throw new Error('Username is already taken');
+        }
+        profileData.username = sanitized;
+      } else {
+        // If invalid, remove it from update
+        delete profileData.username;
+      }
+    }
 
     for (const [key, value] of Object.entries(profileData)) {
       if (allowedFields.includes(key) && value !== undefined) {
@@ -207,22 +265,77 @@ const updateProfile = async (id, profileData, client = null) => {
 };
 
 // Create new user
-const create = async (email, hashedPassword, firstName, lastName) => {
+const create = async (email, hashedPassword, firstName, lastName, username = null) => {
   try {
     // Validate required fields
     if (!firstName || !lastName) {
       throw new Error('First name and last name are required');
     }
     
+    // Generate username if not provided
+    let finalUsername = username;
+    if (!finalUsername) {
+      // First, we need to insert the user to get the ID, then generate username
+      // For now, we'll generate a temporary username and update it if needed
+      finalUsername = await generateUsername(firstName, lastName);
+    } else {
+      // Sanitize and validate provided username
+      finalUsername = sanitizeUsername(finalUsername);
+      const available = await isUsernameAvailable(finalUsername);
+      if (!available) {
+        throw new Error('Username is already taken');
+      }
+    }
+    
     const query = `
-      INSERT INTO users (email, password, first_name, last_name)
-      VALUES ($1, $2, $3, $4)
-      RETURNING id, email, first_name, last_name, created_at, updated_at
+      INSERT INTO users (email, password, username, first_name, last_name)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, email, username, first_name, last_name, created_at, updated_at
     `;
-    const result = await pool.query(query, [email, hashedPassword, firstName, lastName]);
+    const result = await pool.query(query, [email, hashedPassword, finalUsername, firstName, lastName]);
+    
+    // If username was generated and might not be unique enough, regenerate with user ID
+    if (!username && result.rows[0]) {
+      const userId = result.rows[0].id;
+      const betterUsername = await generateUsername(firstName, lastName, userId);
+      if (betterUsername !== finalUsername) {
+        // Update with better username if different
+        const updateQuery = 'UPDATE users SET username = $1 WHERE id = $2 RETURNING username';
+        const updateResult = await pool.query(updateQuery, [betterUsername, userId]);
+        result.rows[0].username = updateResult.rows[0].username;
+      }
+    }
+    
     return result.rows[0];
   } catch (error) {
     console.error('Error creating user:', error.message);
+    throw error;
+  }
+};
+
+// Update username
+const updateUsername = async (userId, username) => {
+  try {
+    const sanitized = sanitizeUsername(username);
+    if (!sanitized) {
+      throw new Error('Invalid username format');
+    }
+
+    const available = await isUsernameAvailable(sanitized, userId);
+    if (!available) {
+      throw new Error('Username is already taken');
+    }
+
+    const query = `
+      UPDATE users
+      SET username = $1, updated_at = NOW()
+      WHERE id = $2
+      RETURNING id, username
+    `;
+    const result = await pool.query(query, [sanitized, userId]);
+    return result.rows[0];
+  } catch (error) {
+    console.error('Error updating username:', error.message);
     throw error;
   }
 };
@@ -231,6 +344,8 @@ module.exports = {
   initializeUsersTable,
   findByEmail,
   findById,
+  findByUsername,
   create,
   updateProfile,
+  updateUsername,
 };

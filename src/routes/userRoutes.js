@@ -5,6 +5,7 @@ const { authenticateToken } = require('../middleware/authMiddleware');
 const {
   getMyProfile,
   getUserProfile,
+  checkUsernameAvailability,
   updateMyProfile,
   updateExtendedProfile,
   createProfile,
@@ -26,6 +27,8 @@ const {
   blockUserHandler,
   unblockUserHandler,
   listBlockedUsers,
+  getUserStatus,
+  updateMyStatus,
 } = require('../controllers/userController');
 
 /**
@@ -70,6 +73,10 @@ router.get('/me', authenticateToken, getMyProfile);
  *           schema:
  *             type: object
  *             properties:
+ *               username:
+ *                 type: string
+ *                 description: Unique username (3-30 chars, alphanumeric, underscores, hyphens)
+ *                 example: "johndoe"
  *               first_name:
  *                 type: string
  *               last_name:
@@ -155,9 +162,47 @@ router.put('/me/profile', authenticateToken, updateExtendedProfile);
 
 /**
  * @swagger
+ * /api/users/username/{username}/available:
+ *   get:
+ *     summary: Check if username is available
+ *     description: Check if a username is available for use. Can be called without authentication, but if authenticated, excludes current user from check.
+ *     tags: [Users]
+ *     parameters:
+ *       - in: path
+ *         name: username
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Username to check
+ *     responses:
+ *       200:
+ *         description: Username availability checked successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 available:
+ *                   type: boolean
+ *                 username:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: Invalid username format
+ *       500:
+ *         description: Internal server error
+ */
+router.get('/username/:username/available', checkUsernameAvailability);
+
+/**
+ * @swagger
  * /api/users/{id}:
  *   get:
- *     summary: Get user profile by ID
+ *     summary: Get user profile by ID or username
+ *     description: Get user profile by numeric ID or username. Accepts either format.
  *     tags: [Users]
  *     security:
  *       - bearerAuth: []
@@ -166,8 +211,10 @@ router.put('/me/profile', authenticateToken, updateExtendedProfile);
  *         name: id
  *         required: true
  *         schema:
- *           type: integer
- *         description: User ID
+ *           oneOf:
+ *             - type: integer
+ *             - type: string
+ *         description: User ID (numeric) or username (string)
  *     responses:
  *       200:
  *         description: User profile retrieved successfully
@@ -665,6 +712,84 @@ router.delete('/:id/block', authenticateToken, unblockUserHandler);
  *         description: List of blocked users
  */
 router.get('/me/blocks', authenticateToken, listBlockedUsers);
+
+/**
+ * @swagger
+ * /api/users/{id}/status:
+ *   get:
+ *     summary: Get user online status
+ *     description: Get online status and last seen timestamp for a user
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: User ID
+ *     responses:
+ *       200:
+ *         description: User status retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   $ref: '#/components/schemas/UserStatus'
+ *       400:
+ *         description: Invalid user ID
+ *       401:
+ *         description: Unauthorized
+ */
+router.get('/:id/status', authenticateToken, getUserStatus);
+
+/**
+ * @swagger
+ * /api/users/me/status:
+ *   put:
+ *     summary: Update own online status
+ *     description: Manually update your online status (optional, usually handled automatically)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - is_online
+ *             properties:
+ *               is_online:
+ *                 type: boolean
+ *                 example: true
+ *                 description: Online status
+ *     responses:
+ *       200:
+ *         description: Status updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   $ref: '#/components/schemas/UserStatus'
+ *       400:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized
+ */
+router.put('/me/status', authenticateToken, updateMyStatus);
 
 router.get('/:id', authenticateToken, getUserProfile);
 

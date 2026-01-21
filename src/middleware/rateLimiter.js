@@ -1,5 +1,6 @@
 // Rate limiting middleware configuration
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 const { redisClient } = require('../config/redis');
 
 // Determine environment
@@ -206,7 +207,7 @@ const userLimiter = rateLimit({
   store: getStore(),
   windowMs: windowMs,
   max: getUserLimit(),
-  keyGenerator: (req) => {
+  keyGenerator: (req, res) => {
     // Use user ID if authenticated (set by authenticateToken middleware in route handlers)
     // Note: When applied at router level, this runs before route handlers
     // So req.user might not be set yet, but that's OK - we'll use IP as fallback
@@ -216,13 +217,17 @@ const userLimiter = rateLimit({
     if (req.user && req.user.id) {
       return `user:${req.user.id}`;
     }
-    // Fallback: use IP address
-    // Extract IP from request, handling proxy headers
+    // Fallback: use IP address with proper IPv6 handling
+    // Extract IP from request (handles proxy headers)
     const ip = req.ip || 
                req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 
                req.connection?.remoteAddress || 
+               req.socket?.remoteAddress ||
                'unknown';
-    return `ip:${String(ip)}`;
+    // Use ipKeyGenerator helper to properly normalize IPv6 addresses
+    // This prevents IPv6 users from bypassing rate limits
+    const ipKey = ipKeyGenerator(ip);
+    return `ip:${ipKey}`;
   },
   message: {
     success: false,

@@ -64,7 +64,7 @@ const findById = async (id) => {
 };
 
 // Find conversations for a user
-const findByUserId = async (userId) => {
+const findByUserId = async (userId, limit = 50, offset = 0) => {
   try {
     const query = `
       SELECT c.*,
@@ -87,18 +87,84 @@ const findByUserId = async (userId) => {
              CASE 
                WHEN c.participant1_id = $1 THEN c.participant1_unread_count
                ELSE c.participant2_unread_count
-             END as unread_count
+             END as unread_count,
+             m.content as last_message_content,
+             m.created_at as last_message_created_at,
+             m.sender_id as last_message_sender_id
       FROM conversations c
       JOIN users u1 ON c.participant1_id = u1.id
       JOIN users u2 ON c.participant2_id = u2.id
+      LEFT JOIN messages m ON c.last_message_id = m.id
       WHERE (c.participant1_id = $1 AND c.participant1_deleted = FALSE)
          OR (c.participant2_id = $1 AND c.participant2_deleted = FALSE)
       ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC
+      LIMIT $2 OFFSET $3
     `;
-    const result = await pool.query(query, [userId]);
+    const result = await pool.query(query, [userId, limit, offset]);
     return result.rows;
   } catch (error) {
     console.error('Error finding conversations by user ID:', error.message);
+    throw error;
+  }
+};
+
+// Get total unread count for user
+const getTotalUnreadCount = async (userId) => {
+  try {
+    const query = `
+      SELECT COALESCE(SUM(
+        CASE 
+          WHEN participant1_id = $1 THEN participant1_unread_count
+          WHEN participant2_id = $1 THEN participant2_unread_count
+          ELSE 0
+        END
+      ), 0) as total_unread
+      FROM conversations
+      WHERE (participant1_id = $1 AND participant1_deleted = FALSE)
+         OR (participant2_id = $1 AND participant2_deleted = FALSE)
+    `;
+    const result = await pool.query(query, [userId]);
+    return parseInt(result.rows[0].total_unread) || 0;
+  } catch (error) {
+    console.error('Error getting total unread count:', error.message);
+    throw error;
+  }
+};
+
+// Check if user is participant
+const isParticipant = async (conversationId, userId) => {
+  try {
+    const query = `
+      SELECT 1
+      FROM conversations
+      WHERE id = $1 AND (participant1_id = $2 OR participant2_id = $2)
+      LIMIT 1
+    `;
+    const result = await pool.query(query, [conversationId, userId]);
+    return result.rows.length > 0;
+  } catch (error) {
+    console.error('Error checking participant:', error.message);
+    throw error;
+  }
+};
+
+// Get other participant ID
+const getOtherParticipantId = async (conversationId, userId) => {
+  try {
+    const query = `
+      SELECT 
+        CASE 
+          WHEN participant1_id = $2 THEN participant2_id
+          WHEN participant2_id = $2 THEN participant1_id
+          ELSE NULL
+        END as other_participant_id
+      FROM conversations
+      WHERE id = $1
+    `;
+    const result = await pool.query(query, [conversationId, userId]);
+    return result.rows[0]?.other_participant_id || null;
+  } catch (error) {
+    console.error('Error getting other participant:', error.message);
     throw error;
   }
 };
@@ -207,4 +273,7 @@ module.exports = {
   incrementUnreadCount,
   markAsRead,
   deleteForUser,
+  getTotalUnreadCount,
+  isParticipant,
+  getOtherParticipantId,
 };
