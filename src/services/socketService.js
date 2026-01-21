@@ -11,13 +11,39 @@ let io = null;
 
 // Initialize Socket.io server
 const initializeSocketIO = async (httpServer) => {
+  // Default allowed origins for Socket.IO (matching HTTP CORS)
+  const defaultOrigins = [
+    'http://localhost:5173',
+    'https://latis.in',
+    'https://weblatis-hkfhcee7ctesdpek.centralindia-01.azurewebsites.net'
+  ];
+
+  // Add additional origins from environment variable (comma-separated)
   const corsOrigins = process.env.WS_CORS_ORIGIN 
-    ? process.env.WS_CORS_ORIGIN.split(',')
-    : ['http://localhost:5173'];
+    ? [...defaultOrigins, ...process.env.WS_CORS_ORIGIN.split(',').map(origin => origin.trim())]
+    : defaultOrigins;
+
+  // Socket.IO CORS function to match HTTP CORS logic
+  const corsOriginFunction = (origin, callback) => {
+    // Allow requests with no origin (mobile apps, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Check exact match first
+    if (corsOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // Allow Azure frontend subdomains for flexibility
+    if (origin.match(/^https:\/\/weblatis-[a-z0-9]+\.centralindia-01\.azurewebsites\.net$/)) {
+      return callback(null, true);
+    }
+    
+    return callback(new Error('CORS blocked'));
+  };
 
   io = new Server(httpServer, {
     cors: {
-      origin: corsOrigins,
+      origin: corsOriginFunction,
       methods: ['GET', 'POST'],
       credentials: true,
     },
