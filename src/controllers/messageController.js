@@ -10,6 +10,7 @@ const UserOnlineStatus = require('../models/UserOnlineStatus');
 const NotificationPreference = require('../models/NotificationPreference');
 const { emitMessageCreated, emitMessageUpdated, emitMessageDeleted, emitNotificationNew } = require('../services/eventService');
 const { emitToUser, emitToRoom } = require('../services/socketService');
+const logger = require('../utils/logger');
 
 // Validation rules
 const validateSendMessage = [
@@ -129,6 +130,8 @@ const listConversations = async (req, res) => {
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
 
+    logger.info('List conversations', { userId, limit, offset });
+
     const conversations = await Conversation.findByUserId(userId, limit, offset);
 
     res.status(200).json({
@@ -141,7 +144,11 @@ const listConversations = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('List conversations error:', error.message);
+    logger.error('List conversations error', {
+      userId: req.user?.id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -154,6 +161,8 @@ const getConversation = async (req, res) => {
   try {
     const userId = req.user.id;
     const conversationId = parseInt(req.params.id);
+
+    logger.info('Get conversation', { userId, conversationId });
 
     const conversation = await Conversation.findById(conversationId);
     if (!conversation) {
@@ -200,7 +209,12 @@ const getConversation = async (req, res) => {
       data: conversationData,
     });
   } catch (error) {
-    console.error('Get conversation error:', error.message);
+    logger.error('Get conversation error', {
+      userId: req.user?.id,
+      conversationId: req.params?.id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -213,6 +227,8 @@ const createConversation = async (req, res) => {
   try {
     const userId = req.user.id;
     const recipientId = parseInt(req.body.recipient_id);
+
+    logger.info('Create or get conversation', { userId, recipientId });
 
     if (!recipientId || recipientId === userId) {
       return res.status(400).json({
@@ -237,7 +253,12 @@ const createConversation = async (req, res) => {
       data: conversation,
     });
   } catch (error) {
-    console.error('Create conversation error:', error.message);
+    logger.error('Create conversation error', {
+      userId: req.user?.id,
+      recipientId: req.body?.recipient_id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -250,6 +271,10 @@ const sendMessage = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      logger.warn('Send message validation failed', {
+        userId: req.user?.id,
+        errors: errors.array(),
+      });
       return res.status(400).json({
         success: false,
         errors: errors.array(),
@@ -263,6 +288,15 @@ const sendMessage = async (req, res) => {
     const attachmentUrl = req.body.attachment_url;
     const attachmentType = req.body.attachment_type;
     const attachmentName = req.body.attachment_name;
+
+    logger.info('Send message start', {
+      userId,
+      conversationId,
+      recipientId,
+      hasContent: Boolean(content),
+      hasAttachment: Boolean(attachmentUrl),
+      attachmentType: attachmentType || undefined,
+    });
 
     // Validate that we have either content or attachment
     if (!content && !attachmentUrl) {
@@ -355,7 +389,13 @@ const sendMessage = async (req, res) => {
       data: messageWithSender.rows[0],
     });
   } catch (error) {
-    console.error('Send message error:', error.message);
+    logger.error('Send message error', {
+      userId: req.user?.id,
+      conversationId: req.body?.conversation_id,
+      recipientId: req.body?.recipient_id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -370,6 +410,8 @@ const getMessages = async (req, res) => {
     const conversationId = parseInt(req.params.id);
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
+
+    logger.info('Get messages', { userId, conversationId, limit, offset });
 
     // Verify user is participant
     const isParticipant = await Conversation.isParticipant(conversationId, userId);
@@ -392,7 +434,12 @@ const getMessages = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Get messages error:', error.message);
+    logger.error('Get messages error', {
+      userId: req.user?.id,
+      conversationId: req.params?.id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -405,6 +452,8 @@ const markConversationAsRead = async (req, res) => {
   try {
     const userId = req.user.id;
     const conversationId = parseInt(req.params.id);
+
+    logger.info('Mark conversation as read', { userId, conversationId });
 
     // Verify user is participant
     const isParticipant = await Conversation.isParticipant(conversationId, userId);
@@ -433,7 +482,12 @@ const markConversationAsRead = async (req, res) => {
       message: 'Conversation marked as read',
     });
   } catch (error) {
-    console.error('Mark conversation as read error:', error.message);
+    logger.error('Mark conversation as read error', {
+      userId: req.user?.id,
+      conversationId: req.params?.id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -446,6 +500,8 @@ const deleteConversation = async (req, res) => {
   try {
     const userId = req.user.id;
     const conversationId = parseInt(req.params.id);
+
+    logger.info('Delete conversation', { userId, conversationId });
 
     // Verify user is participant
     const isParticipant = await Conversation.isParticipant(conversationId, userId);
@@ -463,7 +519,12 @@ const deleteConversation = async (req, res) => {
       message: 'Conversation deleted successfully',
     });
   } catch (error) {
-    console.error('Delete conversation error:', error.message);
+    logger.error('Delete conversation error', {
+      userId: req.user?.id,
+      conversationId: req.params?.id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -476,6 +537,10 @@ const editMessage = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      logger.warn('Edit message validation failed', {
+        userId: req.user?.id,
+        errors: errors.array(),
+      });
       return res.status(400).json({
         success: false,
         errors: errors.array(),
@@ -548,7 +613,12 @@ const editMessage = async (req, res) => {
       data: messageWithSender.rows[0],
     });
   } catch (error) {
-    console.error('Edit message error:', error.message);
+    logger.error('Edit message error', {
+      userId: req.user?.id,
+      messageId: req.params?.id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -561,6 +631,8 @@ const deleteMessage = async (req, res) => {
   try {
     const userId = req.user.id;
     const messageId = parseInt(req.params.id);
+
+    logger.info('Delete message', { userId, messageId });
 
     // Get message
     const message = await Message.findById(messageId);
@@ -594,7 +666,12 @@ const deleteMessage = async (req, res) => {
       message: 'Message deleted successfully',
     });
   } catch (error) {
-    console.error('Delete message error:', error.message);
+    logger.error('Delete message error', {
+      userId: req.user?.id,
+      messageId: req.params?.id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -610,6 +687,8 @@ const searchMessages = async (req, res) => {
     const conversationId = req.query.conversation_id ? parseInt(req.query.conversation_id) : null;
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
+
+    logger.info('Search messages', { userId, conversationId, limit, offset, hasQuery: Boolean(searchQuery) });
 
     if (!searchQuery || searchQuery.length < 1) {
       return res.status(400).json({
@@ -641,7 +720,12 @@ const searchMessages = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Search messages error:', error.message);
+    logger.error('Search messages error', {
+      userId: req.user?.id,
+      conversationId: req.query?.conversation_id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -653,6 +737,8 @@ const searchMessages = async (req, res) => {
 const getUnreadCount = async (req, res) => {
   try {
     const userId = req.user.id;
+
+    logger.info('Get unread count', { userId });
     const count = await Conversation.getTotalUnreadCount(userId);
 
     res.status(200).json({
@@ -662,7 +748,11 @@ const getUnreadCount = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Get unread count error:', error.message);
+    logger.error('Get unread count error', {
+      userId: req.user?.id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -675,6 +765,10 @@ const addReaction = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      logger.warn('Add reaction validation failed', {
+        userId: req.user?.id,
+        errors: errors.array(),
+      });
       return res.status(400).json({
         success: false,
         errors: errors.array(),
@@ -684,6 +778,8 @@ const addReaction = async (req, res) => {
     const userId = req.user.id;
     const messageId = parseInt(req.params.id);
     const reactionType = req.body.reaction_type;
+
+    logger.info('Add reaction', { userId, messageId, reactionType });
 
     // Get message
     const message = await Message.findById(messageId);
@@ -736,7 +832,13 @@ const addReaction = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Add reaction error:', error.message);
+    logger.error('Add reaction error', {
+      userId: req.user?.id,
+      messageId: req.params?.id,
+      reactionType: req.body?.reaction_type,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -750,6 +852,8 @@ const removeReaction = async (req, res) => {
     const userId = req.user.id;
     const messageId = parseInt(req.params.id);
     const reactionType = req.params.type;
+
+    logger.info('Remove reaction', { userId, messageId, reactionType });
 
     // Get message
     const message = await Message.findById(messageId);
@@ -800,7 +904,13 @@ const removeReaction = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Remove reaction error:', error.message);
+    logger.error('Remove reaction error', {
+      userId: req.user?.id,
+      messageId: req.params?.id,
+      reactionType: req.params?.type,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -813,6 +923,8 @@ const getMessageReactions = async (req, res) => {
   try {
     const userId = req.user.id;
     const messageId = parseInt(req.params.id);
+
+    logger.info('Get message reactions', { userId, messageId });
 
     const message = await Message.findById(messageId);
     if (!message) {
@@ -838,7 +950,12 @@ const getMessageReactions = async (req, res) => {
       data: reactions,
     });
   } catch (error) {
-    console.error('Get message reactions error:', error.message);
+    logger.error('Get message reactions error', {
+      userId: req.user?.id,
+      messageId: req.params?.id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -854,6 +971,14 @@ const forwardMessage = async (req, res) => {
     const recipientId = req.body.recipient_id ? parseInt(req.body.recipient_id) : null;
     let conversationId = req.body.conversation_id ? parseInt(req.body.conversation_id) : null;
     const optionalContent = req.body.content?.trim();
+
+    logger.info('Forward message start', {
+      userId,
+      messageId,
+      recipientId,
+      conversationId,
+      hasOptionalContent: Boolean(optionalContent),
+    });
 
     // Get original message
     const originalMessage = await Message.findById(messageId);
@@ -988,7 +1113,14 @@ const forwardMessage = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Forward message error:', error.message);
+    logger.error('Forward message error', {
+      userId: req.user?.id,
+      messageId: req.params?.id,
+      recipientId: req.body?.recipient_id,
+      conversationId: req.body?.conversation_id,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({
       success: false,
       message: 'Internal server error',
