@@ -2,6 +2,17 @@
 
 Production-grade Node.js backend with PostgreSQL database.
 
+## What’s included
+
+- **Auth**: JWT-based authentication
+- **Profiles**: complete profile creation/update + professional data
+- **Social graph (1:1)**:
+  - **Connections** (LinkedIn-style): requests + accept/decline/cancel/remove + listing
+  - **Follows**: one-way follow/unfollow + followers/following lists
+  - **Blocks**: hard block (prevents profile access, filters from search, severs connections/follows)
+- **Search**: users/posts/jobs + universal search
+- **Swagger**: interactive API documentation at `/api-docs`
+
 ## Project Structure
 
 ```
@@ -44,7 +55,47 @@ npm run dev
 ```
 
 4. Access API documentation:
-   - Swagger UI will be available at `http://localhost:3000/api-docs` (once configured)
+   - Swagger UI: `http://localhost:3000/api-docs`
+   - OpenAPI JSON: `http://localhost:3000/api-docs.json`
+
+## Social graph APIs (Connections / Follows / Blocks)
+
+All endpoints below require:
+
+- `Authorization: Bearer <token>`
+
+### Connections
+
+- `POST /api/users/:id/connect` — send connection request
+- `POST /api/users/:id/connect/accept` — accept request from `:id` (**auto-follows both ways**)
+- `POST /api/users/:id/connect/decline` — decline request from `:id`
+- `DELETE /api/users/:id/connect` — cancel outgoing request or remove connection
+- `GET /api/users/me/connections?status=connected|pending` — list my connections
+- `GET /api/users/me/connection-requests/incoming` — incoming requests
+- `GET /api/users/me/connection-requests/outgoing` — outgoing requests
+
+### Follows
+
+- `POST /api/users/:id/follow` — follow user
+- `DELETE /api/users/:id/follow` — unfollow user
+- `GET /api/users/:id/followers?limit=50&offset=0` — list followers
+- `GET /api/users/:id/following?limit=50&offset=0` — list following
+
+### Blocks (hard block)
+
+- `POST /api/users/:id/block` — block user (also removes existing connections/follows both ways)
+- `DELETE /api/users/:id/block` — unblock user
+- `GET /api/users/me/blocks?limit=50&offset=0` — list blocked users
+
+### Relationship flags for frontend
+
+`GET /api/users/:id` and `GET /api/search/users` include `relationship` flags (for authenticated viewers) to drive button states:
+
+- `isConnected`, `connectionStatus`, `connectionRequesterId`, `connectionPending`
+- `iFollowThem`, `theyFollowMe`
+- `iBlocked`, `blockedMe`
+
+See: `API_DOCUMENTATION_CONNECTIONS_FOLLOWS_BLOCKS.md`
 
 ## Environment Variables
 
