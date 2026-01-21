@@ -50,15 +50,31 @@ app.use(compression({
 // CORS configuration
 const allowedOrigins = [
   'http://localhost:5173',
-  'https://latis.in'
+  'https://latis.in',
+  'https://weblatis-hkfhcee7ctesdpek.centralindia-01.azurewebsites.net'
 ];
+
+// Add additional origins from environment variable (comma-separated)
+if (process.env.ALLOWED_ORIGINS) {
+  const additionalOrigins = process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim());
+  allowedOrigins.push(...additionalOrigins);
+}
 
 app.use(cors({
   origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, Postman, etc.)
     if (!origin) return callback(null, true);
+    
+    // Check exact match first
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
+    
+    // Allow Azure frontend subdomains for flexibility
+    if (origin.match(/^https:\/\/weblatis-[a-z0-9]+\.centralindia-01\.azurewebsites\.net$/)) {
+      return callback(null, true);
+    }
+    
     return callback(new Error('CORS blocked'));
   },
   credentials: true,
