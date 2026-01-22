@@ -1,15 +1,10 @@
 // Job queue service using BullMQ
 const { Queue, Worker, QueueEvents } = require('bullmq');
-const { redisClient } = require('../config/redis');
+const { redisClient, getRedisConnectionConfig } = require('../config/redis');
 const logger = require('../utils/logger');
 
 // Create connection for BullMQ (uses existing Redis client config)
-const connection = {
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT) || 6379,
-  password: process.env.REDIS_PASSWORD || undefined,
-  db: parseInt(process.env.REDIS_DB) || 0,
-};
+const connection = getRedisConnectionConfig();
 
 // Job queue instances
 const queues = {};
@@ -21,6 +16,8 @@ const QUEUE_NAMES = {
   EMAIL: 'email',
   NOTIFICATION: 'notification',
   CLEANUP: 'cleanup',
+  IMAGE_PROCESSING: process.env.IMAGE_PROCESSING_QUEUE || 'image-processing',
+  VIDEO_PROCESSING: process.env.VIDEO_PROCESSING_QUEUE || 'video-processing',
 };
 
 /**
@@ -110,6 +107,36 @@ const addCleanupJob = async (cleanupData, options = {}) => {
 };
 
 /**
+ * Add image processing job
+ */
+const addImageProcessingJob = async (imageData, options = {}) => {
+  return addJob(QUEUE_NAMES.IMAGE_PROCESSING, 'process-image', imageData, {
+    priority: options.priority || 5,
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 5000,
+    },
+    ...options,
+  });
+};
+
+/**
+ * Add video processing job
+ */
+const addVideoProcessingJob = async (videoData, options = {}) => {
+  return addJob(QUEUE_NAMES.VIDEO_PROCESSING, 'process-video', videoData, {
+    priority: options.priority || 5,
+    attempts: 2, // Fewer attempts for video (takes longer)
+    backoff: {
+      type: 'exponential',
+      delay: 10000,
+    },
+    ...options,
+  });
+};
+
+/**
  * Get queue statistics
  */
 const getQueueStats = async (queueName) => {
@@ -181,6 +208,8 @@ module.exports = {
   addEmailJob,
   addNotificationJob,
   addCleanupJob,
+  addImageProcessingJob,
+  addVideoProcessingJob,
   getQueueStats,
   cleanQueue,
   closeAllQueues,

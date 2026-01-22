@@ -7,18 +7,20 @@ const os = require('os');
 const getRedisStatus = async (req, res) => {
   try {
     const redisStatus = await testRedisConnection();
+    const isEnabled = !!(process.env.REDIS_CONNECTION_STRING || process.env.REDIS_HOST);
     
     res.status(200).json({
       success: true,
       data: {
         connected: redisStatus.success,
-        enabled: !!process.env.REDIS_HOST,
+        enabled: isEnabled,
         message: redisStatus.success ? 'Redis connected' : (redisStatus.error || 'Redis not available'),
-        config: process.env.REDIS_HOST ? {
-          host: process.env.REDIS_HOST,
-          port: process.env.REDIS_PORT || 6379,
+        config: isEnabled ? {
+          connection_string_used: !!process.env.REDIS_CONNECTION_STRING,
+          host: process.env.REDIS_HOST || 'from connection string',
+          port: process.env.REDIS_PORT || 'from connection string',
           db: process.env.REDIS_DB || 0,
-          password_set: !!process.env.REDIS_PASSWORD,
+          password_set: !!(process.env.REDIS_PASSWORD || process.env.REDIS_CONNECTION_STRING),
         } : null,
       },
     });
@@ -78,8 +80,9 @@ const getHealthStatus = async (req, res) => {
     // Test Redis connection with detailed metrics
     let redisStatus;
     let redisLatency = null;
+    const isRedisEnabled = !!(process.env.REDIS_CONNECTION_STRING || process.env.REDIS_HOST);
     try {
-      if (process.env.REDIS_HOST && redisClient) {
+      if (isRedisEnabled && redisClient) {
         const redisStart = Date.now();
         const pingResult = await redisClient.ping();
         redisLatency = Date.now() - redisStart;
@@ -112,7 +115,7 @@ const getHealthStatus = async (req, res) => {
     } catch (error) {
       redisStatus = {
         connected: false,
-        enabled: !!process.env.REDIS_HOST,
+        enabled: isRedisEnabled,
         error: error.message,
       };
     }
@@ -140,7 +143,7 @@ const getHealthStatus = async (req, res) => {
       },
     };
 
-    const overallHealth = dbStatus.connected && (redisStatus.connected || !process.env.REDIS_HOST);
+    const overallHealth = dbStatus.connected && (redisStatus.connected || !isRedisEnabled);
     const totalCheckTime = Date.now() - startTime;
 
     res.status(overallHealth ? 200 : 503).json({

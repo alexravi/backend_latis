@@ -39,10 +39,13 @@ const { initializeNotificationsTable } = require('./models/Notification');
 const { initializeNotificationPreferencesTable } = require('./models/NotificationPreference');
 const { initializeProfileSettingsTable } = require('./models/ProfileSettings');
 const { testConnection: testRedisConnection } = require('./config/redis');
+const { initializeContainers: initializeAzureContainers } = require('./config/azureStorage');
 const { initializeSocketIO } = require('./services/socketService');
 const { addIndexes } = require('./migrations/addIndexes');
 const { setupUnhandledRejectionHandler, setupUncaughtExceptionHandler } = require('./middleware/errorMiddleware');
 const { createEmailWorker } = require('./jobs/emailJob');
+const { createImageProcessingWorker } = require('./jobs/imageProcessingJob');
+const { createVideoProcessingWorker } = require('./jobs/videoProcessingJob');
 const app = require('./server');
 const http = require('http');
 
@@ -138,7 +141,7 @@ const startServer = async () => {
   }
 
   // Test Redis connection (optional, don't fail if Redis is not available)
-  if (process.env.REDIS_HOST) {
+  if (process.env.REDIS_CONNECTION_STRING || process.env.REDIS_HOST) {
     console.log('\n🔌 Testing Redis connection...');
     const redisStatus = await testRedisConnection();
     if (redisStatus.success) {
@@ -149,41 +152,135 @@ const startServer = async () => {
     }
   }
 
+  // Initialize Azure Blob Storage containers
+  if (process.env.AZURE_STORAGE_CONNECTION_STRING) {
+    console.log('\n🔌 Initializing Azure Blob Storage containers...');
+    try {
+      console.log('📍 Step 1.1: Calling initializeAzureContainers()...');
+      await initializeAzureContainers();
+      console.log('✅ Azure Blob Storage containers initialized\n');
+    } catch (error) {
+      console.log('⚠️  Azure Blob Storage initialization failed');
+      console.log(`   Error: ${error.message}`);
+      if (error.stack) {
+        console.log(`   Stack: ${error.stack.split('\n').slice(0, 5).join('\n')}`);
+      }
+      console.log('   Server will continue without Azure Blob Storage\n');
+    }
+  } else {
+    console.log('\n⚠️  Azure Blob Storage not configured (AZURE_STORAGE_CONNECTION_STRING missing)');
+    console.log('   Media upload features will be unavailable\n');
+  }
+
+  console.log('📍 Step 2: Azure containers complete, creating HTTP server...');
+
   // Create HTTP server
-  const httpServer = http.createServer(app);
+  let httpServer;
+  try {
+    console.log('📍 Step 2.1: Creating HTTP server...');
+    httpServer = http.createServer(app);
+    console.log('✅ HTTP server created');
+  } catch (error) {
+    console.error('❌ Failed to create HTTP server:', error.message);
+    if (error.stack) {
+      console.error('Stack:', error.stack);
+    }
+    throw error;
+  }
+
+  console.log('📍 Step 3: HTTP server created, initializing Socket.io...');
 
   // Initialize Socket.io (only if Redis is enabled or WebSocket is enabled)
   if (process.env.WS_ENABLED !== 'false') {
     try {
+      console.log('📍 Step 3.1: Calling initializeSocketIO()...');
       await initializeSocketIO(httpServer);
+      console.log('✅ Socket.io initialized');
     } catch (error) {
       console.log('⚠️  Socket.io initialization failed:', error.message);
+      if (error.stack) {
+        console.log('Stack:', error.stack.split('\n').slice(0, 5).join('\n'));
+      }
       console.log('   Server will continue without WebSocket support\n');
     }
   }
 
+  console.log('📍 Step 4: Socket.io complete, initializing job workers...');
+
   // Initialize job workers (only if Redis is available)
-  if (process.env.REDIS_HOST) {
+  if (process.env.REDIS_CONNECTION_STRING || process.env.REDIS_HOST) {
     try {
+      console.log('📍 Step 4.1: Creating email worker...');
       const emailWorker = createEmailWorker();
-      console.log('✅ Email worker started\n');
+      console.log('✅ Email worker started');
+      
+      // Start media processing workers (only if Azure is configured)
+      if (process.env.AZURE_STORAGE_CONNECTION_STRING && (process.env.REDIS_CONNECTION_STRING || process.env.REDIS_HOST)) {
+        try {
+          console.log('📍 Step 4.2: Creating image processing worker...');
+          const imageWorker = createImageProcessingWorker();
+          console.log('✅ Image processing worker created');
+          
+          console.log('📍 Step 4.3: Creating video processing worker...');
+          const videoWorker = createVideoProcessingWorker();
+          console.log('✅ Video processing worker created');
+          
+          console.log('✅ Media processing workers started\n');
+        } catch (error) {
+          console.log('⚠️  Media processing workers failed to start');
+          console.log(`   Error: ${error.message}`);
+          if (error.stack) {
+            console.log(`   Stack: ${error.stack.split('\n').slice(0, 5).join('\n')}`);
+          }
+          console.log('   Server will continue without media processing workers\n');
+        }
+      }
     } catch (error) {
-      console.log('⚠️  Job workers initialization failed:', error.message);
+      console.log('⚠️  Job workers initialization failed');
+      console.log(`   Error: ${error.message}`);
+      if (error.stack) {
+        console.log(`   Stack: ${error.stack.split('\n').slice(0, 5).join('\n')}`);
+      }
       console.log('   Server will continue without background job processing\n');
     }
   }
 
+  console.log('📍 Step 5: All initialization complete, starting HTTP server...');
+
   // Start the server
-  httpServer.listen(PORT, () => {
-    console.log(`\n🚀 Server is running on port ${PORT}`);
-    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   API Docs: http://localhost:${PORT}/api-docs`);
-    if (process.env.WS_ENABLED !== 'false') {
-      console.log(`   WebSocket: Enabled\n`);
-    } else {
-      console.log(`   WebSocket: Disabled\n`);
+  try {
+    httpServer.listen(PORT, () => {
+      console.log(`\n🚀 Server is running on port ${PORT}`);
+      console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`   API Docs: http://localhost:${PORT}/api-docs`);
+      if (process.env.WS_ENABLED !== 'false') {
+        console.log(`   WebSocket: Enabled\n`);
+      } else {
+        console.log(`   WebSocket: Disabled\n`);
+      }
+    });
+
+    httpServer.on('error', (error) => {
+      console.error('❌ HTTP Server error:', error.message);
+      if (error.code === 'EADDRINUSE') {
+        console.error(`   Port ${PORT} is already in use`);
+      }
+      process.exit(1);
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error.message);
+    if (error.stack) {
+      console.error('Stack:', error.stack);
     }
-  });
+    process.exit(1);
+  }
 };
 
-startServer();
+// Wrap in try-catch to catch any unhandled errors
+startServer().catch((error) => {
+  console.error('❌ Fatal error during server startup:', error.message);
+  if (error.stack) {
+    console.error('Stack:', error.stack);
+  }
+  process.exit(1);
+});

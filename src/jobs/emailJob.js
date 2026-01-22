@@ -56,12 +56,7 @@ const createEmailWorker = () => {
       }
     },
     {
-      connection: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-        password: process.env.REDIS_PASSWORD || undefined,
-        db: parseInt(process.env.REDIS_DB) || 0,
-      },
+      connection: require('../config/redis').getRedisConnectionConfig(),
       concurrency: parseInt(process.env.EMAIL_WORKER_CONCURRENCY) || 5,
       limiter: {
         max: 10, // Max 10 emails per
