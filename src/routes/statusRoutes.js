@@ -34,7 +34,7 @@ const { getRedisStatus, getHealthStatus } = require('../controllers/statusContro
  *                     enabled:
  *                       type: boolean
  *                       example: true
- *                       description: Whether Redis is configured (REDIS_HOST is set)
+ *                       description: Whether Redis is configured (REDIS_CONNECTION_STRING or REDIS_HOST is set)
  *                     message:
  *                       type: string
  *                       example: "Redis connected"

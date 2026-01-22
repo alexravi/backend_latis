@@ -2,6 +2,7 @@
 const { body, validationResult } = require('express-validator');
 const { pool } = require('../config/database');
 const Post = require('../models/Post');
+const PostMedia = require('../models/PostMedia');
 const Comment = require('../models/Comment');
 const Reaction = require('../models/Reaction');
 const Share = require('../models/Share');
@@ -52,12 +53,34 @@ const createPost = async (req, res) => {
       });
     }
 
+    const { media_ids, ...postBody } = req.body;
     const postData = {
-      ...req.body,
+      ...postBody,
       user_id: req.user.id,
     };
 
+    // Create post
     const post = await Post.create(postData);
+
+    // Associate media with post if media_ids provided
+    if (media_ids && Array.isArray(media_ids) && media_ids.length > 0) {
+      // Update PostMedia records to link them to this post
+      for (const mediaId of media_ids) {
+        const media = await PostMedia.findById(mediaId);
+        if (media && !media.post_id) {
+          // Update the post_id in the database
+          await pool.query(
+            'UPDATE post_media SET post_id = $1 WHERE id = $2',
+            [post.id, mediaId]
+          );
+        }
+      }
+    }
+
+    // Fetch post with media
+    const postWithMedia = await Post.findById(post.id);
+    const media = await PostMedia.findByPostId(post.id);
+    const mediaDescriptors = media.map(m => PostMedia.toDescriptor(m));
 
     // Emit event for real-time updates
     emitPostCreated(post);
@@ -65,7 +88,10 @@ const createPost = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Post created successfully',
-      data: post,
+      data: {
+        ...postWithMedia,
+        media: mediaDescriptors,
+      },
     });
   } catch (error) {
     console.error('Create post error:', error.message);
@@ -132,12 +158,38 @@ const getFeed = async (req, res) => {
       reactionsByPostId[reaction.post_id] = reaction;
     });
 
-    // Map posts with user votes and format reposts
+    // Batch fetch media for all posts (reuse postIds from above)
+    const allMedia = postIds.length > 0 
+      ? await pool.query(
+          'SELECT * FROM post_media WHERE post_id = ANY($1) ORDER BY post_id, display_order ASC',
+          [postIds]
+        )
+      : { rows: [] };
+    
+    const mediaByPostId = {};
+    allMedia.rows.forEach(media => {
+      if (!mediaByPostId[media.post_id]) {
+        mediaByPostId[media.post_id] = [];
+      }
+      // Parse variants if present
+      if (media.variants) {
+        media.variants = typeof media.variants === 'string' 
+          ? JSON.parse(media.variants) 
+          : media.variants;
+      }
+      mediaByPostId[media.post_id].push(media);
+    });
+
+    // Map posts with user votes, media, and format reposts
     const postsWithVotes = posts.map(post => {
       const reaction = reactionsByPostId[post.id];
+      const postMedia = mediaByPostId[post.id] || [];
+      const mediaDescriptors = postMedia.map(m => PostMedia.toDescriptor(m));
+      
       const postData = {
         ...post,
         user_vote: reaction ? reaction.reaction_type : null,
+        media: mediaDescriptors,
       };
 
       // If this is a repost, include original post data
@@ -195,6 +247,10 @@ const getPostById = async (req, res) => {
     // Get user's vote
     const userReaction = await Reaction.findReaction(userId, postId, null);
 
+    // Get media for post
+    const media = await PostMedia.findByPostId(postId);
+    const mediaDescriptors = media.map(m => PostMedia.toDescriptor(m));
+
     // Get top-level comments
     const comments = await Comment.findByPostIdSorted(postId, sortBy, commentLimit, 0);
 
@@ -220,6 +276,7 @@ const getPostById = async (req, res) => {
       data: {
         ...post,
         user_vote: userReaction ? userReaction.reaction_type : null,
+        media: mediaDescriptors,
         comments: commentsWithVotes,
       },
     });

@@ -55,14 +55,29 @@ const notFoundHandler = (req, res, next) => {
  */
 const setupUnhandledRejectionHandler = () => {
   process.on('unhandledRejection', (reason, promise) => {
-    logger.error('Unhandled Rejection', {
-      reason: reason?.message || reason,
-      stack: reason?.stack,
-      promise: promise.toString(),
-    });
-    captureException(reason, {
-      type: 'unhandledRejection',
-    });
+    const errorMessage = reason instanceof Error ? reason.message : String(reason);
+    const errorStack = reason instanceof Error ? reason.stack : undefined;
+    
+    console.error('❌ Unhandled Promise Rejection:', errorMessage);
+    if (errorStack) {
+      console.error('Stack:', errorStack.split('\n').slice(0, 10).join('\n'));
+    }
+    
+    if (logger && logger.error) {
+      logger.error('Unhandled Rejection', {
+        reason: errorMessage,
+        stack: errorStack,
+        promise: promise?.toString(),
+      });
+    }
+    
+    try {
+      captureException(reason instanceof Error ? reason : new Error(String(reason)), {
+        type: 'unhandledRejection',
+      });
+    } catch (captureError) {
+      console.error('Failed to capture exception:', captureError.message);
+    }
   });
 };
 
@@ -71,13 +86,26 @@ const setupUnhandledRejectionHandler = () => {
  */
 const setupUncaughtExceptionHandler = () => {
   process.on('uncaughtException', (error) => {
-    logger.error('Uncaught Exception', {
-      message: error.message,
-      stack: error.stack,
-    });
-    captureException(error, {
-      type: 'uncaughtException',
-    });
+    console.error('❌ Uncaught Exception:', error.message);
+    if (error.stack) {
+      console.error('Stack:', error.stack.split('\n').slice(0, 10).join('\n'));
+    }
+    
+    if (logger && logger.error) {
+      logger.error('Uncaught Exception', {
+        message: error.message,
+        stack: error.stack,
+      });
+    }
+    
+    try {
+      captureException(error, {
+        type: 'uncaughtException',
+      });
+    } catch (captureError) {
+      console.error('Failed to capture exception:', captureError.message);
+    }
+    
     // Wait for Sentry to flush before exiting
     (async () => {
       try {
@@ -86,7 +114,11 @@ const setupUncaughtExceptionHandler = () => {
           await Sentry.flush(2000); // Wait up to 2 seconds for Sentry to send
         }
       } catch (flushError) {
-        logger.error('Error flushing Sentry', { error: flushError.message });
+        if (logger && logger.error) {
+          logger.error('Error flushing Sentry', { error: flushError.message });
+        } else {
+          console.error('Error flushing Sentry:', flushError.message);
+        }
       }
       // Exit process after logging (uncaught exceptions are fatal)
       process.exit(1);

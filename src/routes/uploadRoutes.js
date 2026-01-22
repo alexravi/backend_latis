@@ -8,6 +8,9 @@ const {
   uploadCoverImage,
   uploadDocument,
   uploadMultiple: handleUploadMultiple,
+  generateUploadTokenHandler,
+  completeUploadHandler,
+  getMediaStatus,
 } = require('../controllers/uploadController');
 
 // All upload routes require authentication
@@ -112,5 +115,94 @@ router.post('/document', uploadSingle('document'), uploadDocument);
  *         description: Files uploaded successfully
  */
 router.post('/multiple', uploadMultiple('files', 10), handleUploadMultiple);
+
+/**
+ * @swagger
+ * /api/upload/token:
+ *   post:
+ *     summary: Generate SAS token for direct upload to Azure
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - content_type
+ *             properties:
+ *               content_type:
+ *                 type: string
+ *                 example: image/jpeg
+ *               file_size:
+ *                 type: integer
+ *                 example: 1048576
+ *     responses:
+ *       200:
+ *         description: SAS token generated successfully
+ *       400:
+ *         description: Invalid request
+ */
+router.post('/token', generateUploadTokenHandler);
+
+/**
+ * @swagger
+ * /api/upload/complete:
+ *   post:
+ *     summary: Notify upload completion and start processing
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - upload_id
+ *               - blob_name
+ *               - media_type
+ *             properties:
+ *               upload_id:
+ *                 type: string
+ *               blob_name:
+ *                 type: string
+ *               media_type:
+ *                 type: string
+ *                 enum: [image, video]
+ *               content_type:
+ *                 type: string
+ *               file_size:
+ *                 type: integer
+ *     responses:
+ *       200:
+ *         description: Upload completed, processing started
+ */
+router.post('/complete', completeUploadHandler);
+
+/**
+ * @swagger
+ * /api/media/{id}/status:
+ *   get:
+ *     summary: Get media processing status
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Media status retrieved
+ *       404:
+ *         description: Media not found
+ */
+router.get('/media/:id/status', getMediaStatus);
 
 module.exports = router;
