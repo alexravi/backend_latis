@@ -27,6 +27,14 @@ const processImageJob = async (job) => {
     
     // Update PostMedia with results
     if (postMediaId) {
+      // Safely access metadata with optional chaining and defaults
+      const width = results.metadata?.width ?? null;
+      const height = results.metadata?.height ?? null;
+      
+      if (!results.metadata) {
+        logger.warn('Image processing completed but metadata is missing', { mediaId, postMediaId });
+      }
+      
       await PostMedia.updateStatus(
         postMediaId,
         'ready',
@@ -35,8 +43,8 @@ const processImageJob = async (job) => {
         {
           aspect_ratio: results.aspectRatio,
           dominant_color: results.dominantColor,
-          width: results.metadata.width,
-          height: results.metadata.height,
+          width: width,
+          height: height,
         }
       );
     }

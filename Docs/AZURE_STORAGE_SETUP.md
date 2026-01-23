@@ -136,7 +136,7 @@ Add to your `.env` file:
 
 ```bash
 # Option 1: Use SAS token URL (full URL with SAS token)
-AZURE_STORAGE_SAS_TOKEN_URL=https://medialatis.blob.core.windows.net/?sv=2021-06-08&ss=b&srt=co&sp=rwdlacup&se=2025-12-31T23:59:59Z&st=2024-01-01T00:00:00Z&spr=https&sig=...
+AZURE_STORAGE_SAS_TOKEN_URL=https://medialatis.blob.core.windows.net/?sv=2021-06-08&ss=b&srt=co&sp=rwdlacup&se=2027-12-31T23:59:59Z&st=2024-01-01T00:00:00Z&spr=https&sig=...
 AZURE_STORAGE_ACCOUNT_NAME=medialatis
 
 # Option 2: Still need account key for generating new SAS tokens for client uploads
@@ -154,7 +154,7 @@ az storage account generate-sas \
   --services b \
   --resource-types sco \
   --permissions rwdlacup \
-  --expiry 2025-12-31T23:59:59Z \
+  --expiry 2027-12-31T23:59:59Z \
   --output tsv
 
 # Construct full URL
@@ -172,7 +172,7 @@ az storage container generate-sas \
   --account-key <your-key> \
   --name private-originals \
   --permissions rwdlac \
-  --expiry 2025-12-31T23:59:59Z \
+  --expiry 2027-12-31T23:59:59Z \
   --output tsv
 ```
 

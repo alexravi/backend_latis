@@ -8,14 +8,14 @@ const logger = require('../utils/logger');
 
 /**
  * Generate a unique blob name with versioning
- * Format: {prefix}_{unique_id}_v{version}.{ext}
+ * Format: {prefix}_{mediaId}_{uniqueId}_v{version}.{ext}
  */
 const generateBlobName = (prefix, mediaId, version = 1, extension = '') => {
   const timestamp = Date.now();
   const random = Math.round(Math.random() * 1E9);
   const uniqueId = `${timestamp}_${random}`;
   const ext = extension ? `.${extension}` : '';
-  return `${prefix}_${mediaId}_v${version}${ext}`;
+  return `${prefix}_${mediaId}_${uniqueId}_v${version}${ext}`;
 };
 
 /**

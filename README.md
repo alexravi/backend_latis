@@ -97,6 +97,10 @@ All endpoints below require:
 
 See: `API_DOCUMENTATION_CONNECTIONS_FOLLOWS_BLOCKS.md`
 
+## Activity feed + Social graph insights + Profile visitors (Frontend Guide)
+
+See: `API_DOCUMENTATION_SOCIAL_GRAPH_ACTIVITY_VISITORS.md`
+
 ## Environment Variables
 
 - `PORT` - Server port (default: 3000)

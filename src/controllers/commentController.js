@@ -93,6 +93,26 @@ const createComment = async (req, res) => {
 
       await client.query('COMMIT');
 
+      // Create activity
+      try {
+        const ActivityFeed = require('../models/ActivityFeed');
+        const activityType = commentData.parent_comment_id ? 'comment_replied' : 'comment_created';
+        await ActivityFeed.create({
+          user_id: req.user.id,
+          activity_type: activityType,
+          activity_data: { 
+            post_id: postId, 
+            comment_id: comment.id,
+            parent_comment_id: commentData.parent_comment_id || null,
+          },
+          related_post_id: postId,
+          related_comment_id: comment.id,
+        });
+      } catch (activityError) {
+        // Log but don't fail the request if activity creation fails
+        console.error('Error creating activity for comment:', activityError.message);
+      }
+
       // Emit event for real-time updates
       const commentForEvent = await Comment.findById(comment.id);
       emitCommentCreated(commentForEvent);

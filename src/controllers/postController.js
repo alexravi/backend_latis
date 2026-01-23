@@ -67,12 +67,25 @@ const createPost = async (req, res) => {
       // Update PostMedia records to link them to this post
       for (const mediaId of media_ids) {
         const media = await PostMedia.findById(mediaId);
+        // Verify ownership: media must be unlinked (post_id is null) to prevent linking media from other posts
+        // Note: Since post_media doesn't have user_id, we verify by ensuring media is unlinked
+        // and can only be linked to posts created by the same authenticated user
         if (media && !media.post_id) {
+          // Additional check: if media was previously linked, verify it belongs to a post by this user
+          // For unlinked media, allow linking (assumes media was uploaded by authenticated user)
           // Update the post_id in the database
           await pool.query(
             'UPDATE post_media SET post_id = $1 WHERE id = $2',
             [post.id, mediaId]
           );
+        } else if (media && media.post_id) {
+          // Media already linked to another post - check if that post belongs to this user
+          const existingPost = await Post.findById(media.post_id);
+          if (existingPost && existingPost.user_id !== req.user.id) {
+            // Log unauthorized attempt
+            console.warn(`User ${req.user.id} attempted to link media ${mediaId} from post ${media.post_id} owned by ${existingPost.user_id}`);
+            continue; // Skip this media
+          }
         }
       }
     }
@@ -81,6 +94,20 @@ const createPost = async (req, res) => {
     const postWithMedia = await Post.findById(post.id);
     const media = await PostMedia.findByPostId(post.id);
     const mediaDescriptors = media.map(m => PostMedia.toDescriptor(m));
+
+    // Create activity
+    try {
+      const ActivityFeed = require('../models/ActivityFeed');
+      await ActivityFeed.create({
+        user_id: req.user.id,
+        activity_type: 'post_created',
+        activity_data: { post_id: post.id, title: post.title || null },
+        related_post_id: post.id,
+      });
+    } catch (activityError) {
+      // Log but don't fail the request if activity creation fails
+      console.error('Error creating activity for post:', activityError.message);
+    }
 
     // Emit event for real-time updates
     emitPostCreated(post);

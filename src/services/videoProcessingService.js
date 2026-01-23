@@ -64,22 +64,47 @@ const extractPoster = async (videoBuffer, mediaId) => {
             // Use the feed variant as poster URL
             const posterUrl = imageResults.variants.feed || imageResults.variants.full;
             
-            // Cleanup temp files
-            fs.unlinkSync(tempVideoPath).catch(() => {});
-            fs.unlinkSync(tempPosterPath).catch(() => {});
+            // Cleanup temp files (use async unlink with error handling)
+            try {
+              await fs.promises.unlink(tempVideoPath);
+            } catch (err) {
+              // Ignore cleanup errors
+            }
+            try {
+              await fs.promises.unlink(tempPosterPath);
+            } catch (err) {
+              // Ignore cleanup errors
+            }
             
             resolve(posterUrl);
           } catch (error) {
-            // Cleanup on error
-            fs.unlinkSync(tempVideoPath).catch(() => {});
-            fs.unlinkSync(tempPosterPath).catch(() => {});
+            // Cleanup on error (use async unlink with error handling)
+            try {
+              await fs.promises.unlink(tempVideoPath);
+            } catch (err) {
+              // Ignore cleanup errors
+            }
+            try {
+              await fs.promises.unlink(tempPosterPath);
+            } catch (err) {
+              // Ignore cleanup errors
+            }
             logger.error('Failed to process poster image', { error: error.message, mediaId });
             reject(error);
           }
         })
-        .on('error', (error) => {
-          // Cleanup on error
-          fs.unlinkSync(tempVideoPath).catch(() => {});
+        .on('error', async (error) => {
+          // Cleanup on error (use async unlink with error handling)
+          try {
+            await fs.promises.unlink(tempVideoPath);
+          } catch (err) {
+            // Ignore cleanup errors
+          }
+          try {
+            await fs.promises.unlink(tempPosterPath);
+          } catch (err) {
+            // Ignore cleanup errors
+          }
           logger.error('Failed to extract poster', { error: error.message, mediaId });
           reject(error);
         });

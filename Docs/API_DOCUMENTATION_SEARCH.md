@@ -443,42 +443,59 @@ data.data.people.forEach(person => {
 
 ```javascript
 // Debounced autocomplete hook example
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { debounce } from 'lodash';
 
-function useAutocomplete(query, delay = 300) {
+function useAutocomplete(query, token, delay = 300) {
   const [suggestions, setSuggestions] = useState(null);
   const [loading, setLoading] = useState(false);
+  
+  // Store debounced function in ref to persist across renders
+  const debouncedRef = useRef(null);
 
   useEffect(() => {
+    // Create debounced function once and store in ref
+    if (!debouncedRef.current) {
+      debouncedRef.current = debounce(async (searchQuery, authToken) => {
+        if (!searchQuery || searchQuery.length < 2) {
+          setSuggestions(null);
+          setLoading(false);
+          return;
+        }
+
+        setLoading(true);
+        try {
+          const response = await fetch(`/api/search/autocomplete?q=${encodeURIComponent(searchQuery)}`, {
+            headers: {
+              'Authorization': `Bearer ${authToken}`
+            }
+          });
+          const data = await response.json();
+          setSuggestions(data.data);
+        } catch (error) {
+          console.error('Autocomplete error:', error);
+        } finally {
+          setLoading(false);
+        }
+      }, delay);
+    }
+
     if (!query || query.length < 2) {
       setSuggestions(null);
+      setLoading(false);
       return;
     }
 
-    setLoading(true);
-    const debouncedSearch = debounce(async () => {
-      try {
-        const response = await fetch(`/api/search/autocomplete?q=${encodeURIComponent(query)}`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-        const data = await response.json();
-        setSuggestions(data.data);
-      } catch (error) {
-        console.error('Autocomplete error:', error);
-      } finally {
-        setLoading(false);
-      }
-    }, delay);
+    // Call the debounced function
+    debouncedRef.current(query, token);
 
-    debouncedSearch();
-
+    // Cleanup: cancel pending debounced calls
     return () => {
-      debouncedSearch.cancel();
+      if (debouncedRef.current) {
+        debouncedRef.current.cancel();
+      }
     };
-  }, [query, delay]);
+  }, [query, token, delay]);
 
   return { suggestions, loading };
 }
@@ -702,7 +719,7 @@ async function searchUsers(query, filters = {}) {
 ### Complete Search Component Example (React)
 
 ```javascript
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { debounce } from 'lodash';
 
 function SearchComponent() {
@@ -710,6 +727,9 @@ function SearchComponent() {
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
+  
+  // Get token from your auth context or storage
+  const token = localStorage.getItem('token'); // Or from context/state
 
   const searchTypes = {
     all: 'Universal',
@@ -720,7 +740,8 @@ function SearchComponent() {
     topics: 'Topics'
   };
 
-  const performSearch = debounce(async (searchQuery, type) => {
+  // Create stable search handler with useCallback
+  const performSearchHandler = useCallback(async (searchQuery, type) => {
     if (!searchQuery || searchQuery.length < 2) {
       setResults(null);
       return;
@@ -751,11 +772,22 @@ function SearchComponent() {
     } finally {
       setLoading(false);
     }
-  }, 300);
+  }, [token]);
+
+  // Create stable debounced function with useMemo
+  const performSearchDebounced = useMemo(
+    () => debounce(performSearchHandler, 300),
+    [performSearchHandler]
+  );
 
   useEffect(() => {
-    performSearch(query, activeTab);
-  }, [query, activeTab]);
+    performSearchDebounced(query, activeTab);
+    
+    // Cleanup: cancel pending debounced calls on unmount
+    return () => {
+      performSearchDebounced.cancel();
+    };
+  }, [query, activeTab, performSearchDebounced]);
 
   return (
     <div className="search-container">

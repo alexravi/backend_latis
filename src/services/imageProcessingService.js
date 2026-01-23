@@ -46,7 +46,17 @@ const processImage = async (imageBuffer, mediaId, originalFormat = 'jpg') => {
     const metadata = await extractImageMetadata(imageBuffer);
     if (metadata) {
       results.metadata = metadata;
-      results.aspectRatio = metadata.width / metadata.height;
+      // Guard against division-by-zero when computing aspect ratio
+      if (metadata.height && metadata.height > 0 && isFinite(metadata.height) && 
+          metadata.width && metadata.width > 0 && isFinite(metadata.width)) {
+        results.aspectRatio = metadata.width / metadata.height;
+      } else {
+        results.aspectRatio = null;
+        logger.warn('Invalid image dimensions for aspect ratio calculation', {
+          width: metadata.width,
+          height: metadata.height,
+        });
+      }
     }
 
     // Extract dominant color
