@@ -130,6 +130,8 @@ const statusRoutes = require('./routes/statusRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const searchRoutes = require('./routes/searchRoutes');
 const messageRoutes = require('./routes/messageRoutes');
+const activityRoutes = require('./routes/activityRoutes');
+const socialGraphRoutes = require('./routes/socialGraphRoutes');
 
 // V1 API routes (versioned)
 // userLimiter is applied within v1Routes router (after authentication in route handlers)
@@ -156,6 +158,8 @@ app.use('/api/comments', userLimiter, commentRoutes);
 app.use('/api/upload', userLimiter, uploadRoutes);
 app.use('/api/search', userLimiter, searchRoutes);
 app.use('/api/messages', userLimiter, messageRoutes);
+app.use('/api/activities', userLimiter, activityRoutes);
+app.use('/api/social-graph', userLimiter, socialGraphRoutes);
 
 // Auth routes use authLimiter (applied in route file)
 app.use('/api/auth', authRoutes);

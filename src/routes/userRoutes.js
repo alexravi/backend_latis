@@ -199,6 +199,36 @@ router.get('/username/:username/available', checkUsernameAvailability);
 
 /**
  * @swagger
+ * /api/users/username/{username}:
+ *   get:
+ *     summary: Get user profile by username
+ *     description: Get user profile by username. This is a convenience endpoint that provides explicit username lookup.
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: username
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Username to lookup
+ *     responses:
+ *       200:
+ *         description: User profile retrieved successfully
+ *       403:
+ *         description: Profile is private
+ *       404:
+ *         description: User not found
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Internal server error
+ */
+router.get('/username/:username', authenticateToken, getUserProfile);
+
+/**
+ * @swagger
  * /api/users/{id}:
  *   get:
  *     summary: Get user profile by ID or username

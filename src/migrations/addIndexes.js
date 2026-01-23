@@ -229,6 +229,11 @@ const addIndexes = async () => {
       CREATE INDEX IF NOT EXISTS idx_activity_feed_user_id ON activity_feed(user_id);
       CREATE INDEX IF NOT EXISTS idx_activity_feed_created_at ON activity_feed(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_activity_feed_user_created ON activity_feed(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_activity_feed_activity_type ON activity_feed(activity_type);
+      CREATE INDEX IF NOT EXISTS idx_activity_feed_type_created ON activity_feed(activity_type, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_activity_feed_related_user_id ON activity_feed(related_user_id) WHERE related_user_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_activity_feed_related_post_id ON activity_feed(related_post_id) WHERE related_post_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_activity_feed_related_comment_id ON activity_feed(related_comment_id) WHERE related_comment_id IS NOT NULL;
     `);
 
     // Saved jobs table indexes
@@ -243,6 +248,16 @@ const addIndexes = async () => {
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_recommendations_user_id ON recommendations(user_id);
       CREATE INDEX IF NOT EXISTS idx_recommendations_recommender_id ON recommendations(recommender_id);
+    `);
+
+    // Profile visitors table indexes
+    logger.info('Creating indexes on profile_visitors table...');
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_profile_visitors_visitor_id ON profile_visitors(visitor_id);
+      CREATE INDEX IF NOT EXISTS idx_profile_visitors_profile_user_id ON profile_visitors(profile_user_id);
+      CREATE INDEX IF NOT EXISTS idx_profile_visitors_last_visited_at ON profile_visitors(last_visited_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_profile_visitors_profile_last_visited ON profile_visitors(profile_user_id, last_visited_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_profile_visitors_visitor_last_visited ON profile_visitors(visitor_id, last_visited_at DESC);
     `);
 
     await client.query('COMMIT');

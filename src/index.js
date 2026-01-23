@@ -35,6 +35,7 @@ const { initializeJobApplicationsTable } = require('./models/JobApplication');
 const { initializeSavedJobsTable } = require('./models/SavedJob');
 const { initializeJobSkillsTable } = require('./models/JobSkill');
 const { initializeActivityFeedTable } = require('./models/ActivityFeed');
+const { initializeProfileVisitorsTable } = require('./models/ProfileVisitors');
 const { initializeNotificationsTable } = require('./models/Notification');
 const { initializeNotificationPreferencesTable } = require('./models/NotificationPreference');
 const { initializeProfileSettingsTable } = require('./models/ProfileSettings');
@@ -115,6 +116,7 @@ const startServer = async () => {
       
       // Activity and notification tables
       await initializeActivityFeedTable();
+      await initializeProfileVisitorsTable();
       await initializeNotificationsTable();
       await initializeNotificationPreferencesTable();
       await initializeProfileSettingsTable();

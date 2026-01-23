@@ -149,6 +149,10 @@ const findByUserId = async (userId, status = null) => {
                WHEN c.requester_id = $1 THEN u2.id
                ELSE u1.id
              END as connection_id,
+             CASE
+               WHEN c.requester_id = $1 THEN u2.username
+               ELSE u1.username
+             END as connection_username,
              CASE 
                WHEN c.requester_id = $1 THEN u2.first_name
                ELSE u1.first_name
@@ -234,6 +238,104 @@ const getConnectionCount = async (userId) => {
   }
 };
 
+// Find mutual connections between two users
+const findMutualConnections = async (userId1, userId2) => {
+  try {
+    const query = `
+      SELECT DISTINCT u.id, u.first_name, u.last_name, u.profile_image_url, u.headline
+      FROM users u
+      WHERE u.id IN (
+        SELECT CASE 
+          WHEN c1.requester_id = $1 THEN c1.addressee_id
+          ELSE c1.requester_id
+        END
+        FROM connections c1
+        WHERE ((c1.requester_id = $1 OR c1.addressee_id = $1) AND c1.status = 'connected')
+      )
+      AND u.id IN (
+        SELECT CASE 
+          WHEN c2.requester_id = $2 THEN c2.addressee_id
+          ELSE c2.requester_id
+        END
+        FROM connections c2
+        WHERE ((c2.requester_id = $2 OR c2.addressee_id = $2) AND c2.status = 'connected')
+      )
+      AND u.id != $1
+      AND u.id != $2
+    `;
+    const result = await pool.query(query, [userId1, userId2]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding mutual connections:', error.message);
+    throw error;
+  }
+};
+
+// Find second-degree connections (connections of connections)
+const findSecondDegreeConnections = async (userId, limit = 50) => {
+  try {
+    const query = `
+      SELECT DISTINCT u.id, u.first_name, u.last_name, u.profile_image_url, u.headline,
+             COUNT(*) as mutual_count
+      FROM users u
+      JOIN connections c2 ON (
+        (c2.requester_id = u.id OR c2.addressee_id = u.id) 
+        AND c2.status = 'connected'
+      )
+      JOIN connections c1 ON (
+        ((c1.requester_id = $1 OR c1.addressee_id = $1) AND c1.status = 'connected')
+        AND (
+          (c1.requester_id = $1 AND c1.addressee_id = c2.requester_id)
+          OR (c1.requester_id = $1 AND c1.addressee_id = c2.addressee_id)
+          OR (c1.addressee_id = $1 AND c1.requester_id = c2.requester_id)
+          OR (c1.addressee_id = $1 AND c1.requester_id = c2.addressee_id)
+        )
+      )
+      WHERE u.id != $1
+        AND u.id NOT IN (
+          SELECT CASE 
+            WHEN c.requester_id = $1 THEN c.addressee_id
+            ELSE c.requester_id
+          END
+          FROM connections c
+          WHERE (c.requester_id = $1 OR c.addressee_id = $1) AND c.status = 'connected'
+        )
+      GROUP BY u.id, u.first_name, u.last_name, u.profile_image_url, u.headline
+      ORDER BY mutual_count DESC
+      LIMIT $2
+    `;
+    const result = await pool.query(query, [userId, limit]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding second-degree connections:', error.message);
+    throw error;
+  }
+};
+
+// Get network statistics for a user
+const getNetworkStats = async (userId) => {
+  try {
+    const query = `
+      SELECT 
+        (SELECT COUNT(*) FROM connections 
+         WHERE (requester_id = $1 OR addressee_id = $1) AND status = 'connected') as connection_count,
+        (SELECT COUNT(*) FROM connections 
+         WHERE requester_id = $1 AND status = 'pending') as outgoing_requests,
+        (SELECT COUNT(*) FROM connections 
+         WHERE addressee_id = $1 AND status = 'pending') as incoming_requests
+    `;
+    const result = await pool.query(query, [userId]);
+    return {
+      connection_count: parseInt(result.rows[0].connection_count),
+      outgoing_requests: parseInt(result.rows[0].outgoing_requests),
+      incoming_requests: parseInt(result.rows[0].incoming_requests),
+    };
+  } catch (error) {
+    console.error('Error getting network stats:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeConnectionsTable,
   createRequest,
@@ -244,4 +346,7 @@ module.exports = {
   findPendingRequests,
   findOutgoingRequests,
   getConnectionCount,
+  findMutualConnections,
+  findSecondDegreeConnections,
+  getNetworkStats,
 };

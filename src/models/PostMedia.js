@@ -35,12 +35,16 @@ const initializePostMediaTable = async () => {
           ADD COLUMN IF NOT EXISTS original_blob_name VARCHAR(500);
       `);
       
-      // Add status constraint if it doesn't exist
+      // Add status constraint if it doesn't exist (check specifically for post_media table)
       await pool.query(`
         DO $$
         BEGIN
           IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint WHERE conname = 'check_status'
+            SELECT 1 
+            FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            WHERE t.relname = 'post_media' 
+              AND c.conname = 'check_status'
           ) THEN
             ALTER TABLE post_media
               ADD CONSTRAINT check_status 

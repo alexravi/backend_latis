@@ -152,9 +152,23 @@ const getMyProfile = async (req, res) => {
     // Try to get from cache first
     const cachedProfile = await getCachedUserProfile(userId);
     if (cachedProfile) {
+      // Attach counts even for cached profiles
+      const [connectionsCount, followersCount, followingCount] = await Promise.all([
+        Connection.getConnectionCount(userId),
+        Follow.getFollowerCount(userId),
+        Follow.getFollowingCount(userId),
+      ]);
+
+      const profilePayload = cachedProfile.user || cachedProfile;
+      profilePayload.counts = {
+        connections: connectionsCount,
+        followers: followersCount,
+        following: followingCount,
+      };
+
       return res.status(200).json({
         success: true,
-        user: cachedProfile,
+        user: profilePayload,
       });
     }
     
@@ -182,6 +196,17 @@ const getMyProfile = async (req, res) => {
       settings: settings || null,
     };
 
+    const [connectionsCount, followersCount, followingCount] = await Promise.all([
+      Connection.getConnectionCount(userId),
+      Follow.getFollowerCount(userId),
+      Follow.getFollowingCount(userId),
+    ]);
+    profileData.counts = {
+      connections: connectionsCount,
+      followers: followersCount,
+      following: followingCount,
+    };
+
     // Cache the profile (async, don't wait)
     setCachedUserProfile(userId, profileData).catch(err => {
       console.error('Failed to cache user profile:', err.message);
@@ -203,19 +228,20 @@ const getMyProfile = async (req, res) => {
 // Get user profile by ID or username
 const getUserProfile = async (req, res) => {
   try {
-    const { id } = req.params;
+    // Support both /:id and /username/:username routes
+    const identifier = req.params.id || req.params.username;
     let user = null;
     let userId = null;
 
     // Try to parse as ID first
-    const parsedId = parseInt(id);
+    const parsedId = parseInt(identifier);
     if (!isNaN(parsedId)) {
       // It's a numeric ID
       userId = parsedId;
       user = await User.findById(userId);
     } else {
       // It might be a username
-      user = await User.findByUsername(id);
+      user = await User.findByUsername(identifier);
       if (user) {
         userId = user.id;
       }
@@ -259,6 +285,17 @@ const getUserProfile = async (req, res) => {
 
       const profilePayload = cachedProfile.user || cachedProfile;
 
+      const [connectionsCount, followersCount, followingCount] = await Promise.all([
+        Connection.getConnectionCount(userId),
+        Follow.getFollowerCount(userId),
+        Follow.getFollowingCount(userId),
+      ]);
+      profilePayload.counts = {
+        connections: connectionsCount,
+        followers: followersCount,
+        following: followingCount,
+      };
+
       // Attach relationship flags if viewer is authenticated
       if (viewerId) {
         const [connection, iFollowThem, theyFollowMe, iBlocked, blockedMe] = await Promise.all([
@@ -279,6 +316,17 @@ const getUserProfile = async (req, res) => {
           iBlocked,
           blockedMe,
         };
+      }
+
+      // Record profile visit (if viewer is authenticated and not viewing own profile)
+      if (viewerId && viewerId !== userId) {
+        try {
+          const ProfileVisitors = require('../models/ProfileVisitors');
+          await ProfileVisitors.recordVisit(viewerId, userId);
+        } catch (visitError) {
+          // Log but don't fail the request if visit recording fails
+          console.error('Error recording profile visit:', visitError.message);
+        }
       }
 
       return res.status(200).json({
@@ -320,6 +368,17 @@ const getUserProfile = async (req, res) => {
       profile: profile || null,
     };
 
+    const [connectionsCount, followersCount, followingCount] = await Promise.all([
+      Connection.getConnectionCount(userId),
+      Follow.getFollowerCount(userId),
+      Follow.getFollowingCount(userId),
+    ]);
+    profileData.counts = {
+      connections: connectionsCount,
+      followers: followersCount,
+      following: followingCount,
+    };
+
     // Attach relationship flags if viewer is authenticated
     if (viewerId) {
       const [connection, iFollowThem, theyFollowMe, iBlocked, blockedMe] = await Promise.all([
@@ -340,6 +399,17 @@ const getUserProfile = async (req, res) => {
         iBlocked,
         blockedMe,
       };
+    }
+
+    // Record profile visit (if viewer is authenticated and not viewing own profile)
+    if (viewerId && viewerId !== userId) {
+      try {
+        const ProfileVisitors = require('../models/ProfileVisitors');
+        await ProfileVisitors.recordVisit(viewerId, userId);
+      } catch (visitError) {
+        // Log but don't fail the request if visit recording fails
+        console.error('Error recording profile visit:', visitError.message);
+      }
     }
 
     // Cache the profile if it's public (async, don't wait)
@@ -443,6 +513,18 @@ const updateMyProfile = async (req, res) => {
     await invalidateUserCaches(userId).catch(err => {
       console.error('Failed to invalidate user cache:', err.message);
     });
+
+    // Create activity for profile update (optional, can be filtered later)
+    try {
+      const ActivityFeed = require('../models/ActivityFeed');
+      await ActivityFeed.create({
+        user_id: userId,
+        activity_type: 'profile_updated',
+        activity_data: { updated_fields: Object.keys(profileData) },
+      });
+    } catch (activityError) {
+      console.error('Error creating activity for profile update:', activityError.message);
+    }
 
     // Remove password from response
     const { password, ...userWithoutPassword } = updatedUser;
@@ -1429,6 +1511,29 @@ const acceptConnectionRequest = async (req, res) => {
       Follow.follow(requesterId, addresseeId),
     ]);
 
+    // Create activity for both users
+    try {
+      const ActivityFeed = require('../models/ActivityFeed');
+      await Promise.all([
+        ActivityFeed.create({
+          user_id: addresseeId,
+          activity_type: 'connection_accepted',
+          activity_data: { connection_id: connection.id, other_user_id: requesterId },
+          related_user_id: requesterId,
+          related_connection_id: connection.id,
+        }),
+        ActivityFeed.create({
+          user_id: requesterId,
+          activity_type: 'connection_accepted',
+          activity_data: { connection_id: connection.id, other_user_id: addresseeId },
+          related_user_id: addresseeId,
+          related_connection_id: connection.id,
+        }),
+      ]);
+    } catch (activityError) {
+      console.error('Error creating activity for connection:', activityError.message);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Connection request accepted',
@@ -1585,6 +1690,21 @@ const followUser = async (req, res) => {
     if (!allowed) return;
 
     const follow = await Follow.follow(currentUserId, targetUserId);
+
+    // Create activity
+    if (follow) {
+      try {
+        const ActivityFeed = require('../models/ActivityFeed');
+        await ActivityFeed.create({
+          user_id: currentUserId,
+          activity_type: 'follow',
+          activity_data: { following_id: targetUserId },
+          related_user_id: targetUserId,
+        });
+      } catch (activityError) {
+        console.error('Error creating activity for follow:', activityError.message);
+      }
+    }
 
     res.status(201).json({
       success: true,

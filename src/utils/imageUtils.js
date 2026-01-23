@@ -38,9 +38,24 @@ const extractDominantColor = async (buffer) => {
     const pixelCount = width * height;
     
     for (let i = 0; i < data.length; i += channels) {
-      rSum += data[i];
-      gSum += data[i + 1];
-      bSum += data[i + 2];
+      if (channels === 1) {
+        // Grayscale: use same value for all channels
+        const gray = data[i];
+        rSum += gray;
+        gSum += gray;
+        bSum += gray;
+      } else if (channels === 2) {
+        // Grayscale with alpha: use first channel as gray, ignore alpha
+        const gray = data[i];
+        rSum += gray;
+        gSum += gray;
+        bSum += gray;
+      } else {
+        // RGB or RGBA: use first 3 channels
+        rSum += data[i];
+        if (i + 1 < data.length) gSum += data[i + 1];
+        if (i + 2 < data.length) bSum += data[i + 2];
+      }
     }
     
     const r = Math.round(rSum / pixelCount);

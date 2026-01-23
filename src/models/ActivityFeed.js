@@ -110,10 +110,156 @@ const remove = async (id) => {
   }
 };
 
+// Find activities by type
+const findByType = async (userId, activityType, limit = 50, offset = 0) => {
+  try {
+    const query = `
+      SELECT * FROM activity_feed
+      WHERE user_id = $1 AND activity_type = $2
+      ORDER BY created_at DESC
+      LIMIT $3 OFFSET $4
+    `;
+    const result = await pool.query(query, [userId, activityType, limit, offset]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding activities by type:', error.message);
+    throw error;
+  }
+};
+
+// Find activities by date range
+const findByDateRange = async (userId, startDate, endDate, limit = 50, offset = 0) => {
+  try {
+    const query = `
+      SELECT * FROM activity_feed
+      WHERE user_id = $1 
+        AND created_at >= $2 
+        AND created_at <= $3
+      ORDER BY created_at DESC
+      LIMIT $4 OFFSET $5
+    `;
+    const result = await pool.query(query, [userId, startDate, endDate, limit, offset]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding activities by date range:', error.message);
+    throw error;
+  }
+};
+
+// Find activities with filters (type and/or date range)
+const findWithFilters = async (userId, filters = {}, limit = 50, offset = 0) => {
+  try {
+    let query = 'SELECT * FROM activity_feed WHERE user_id = $1';
+    const params = [userId];
+    let paramCount = 2;
+
+    if (filters.activity_type) {
+      query += ` AND activity_type = $${paramCount}`;
+      params.push(filters.activity_type);
+      paramCount++;
+    }
+
+    if (filters.start_date) {
+      query += ` AND created_at >= $${paramCount}`;
+      params.push(filters.start_date);
+      paramCount++;
+    }
+
+    if (filters.end_date) {
+      query += ` AND created_at <= $${paramCount}`;
+      params.push(filters.end_date);
+      paramCount++;
+    }
+
+    query += ` ORDER BY created_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    params.push(limit, offset);
+
+    const result = await pool.query(query, params);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding activities with filters:', error.message);
+    throw error;
+  }
+};
+
+// Find feed activities with filters
+const findFeedWithFilters = async (userId, filters = {}, limit = 50, offset = 0) => {
+  try {
+    let query = `
+      SELECT af.*, u.first_name, u.last_name, u.profile_image_url
+      FROM activity_feed af
+      JOIN users u ON af.user_id = u.id
+      WHERE (af.user_id = $1
+         OR EXISTS (
+           SELECT 1 FROM follows f
+           WHERE f.following_id = af.user_id AND f.follower_id = $1
+         )
+         OR EXISTS (
+           SELECT 1 FROM connections c
+           WHERE ((c.requester_id = $1 AND c.addressee_id = af.user_id) OR
+                  (c.requester_id = af.user_id AND c.addressee_id = $1))
+             AND c.status = 'connected'
+         ))
+    `;
+    const params = [userId];
+    let paramCount = 2;
+
+    if (filters.activity_type) {
+      query += ` AND af.activity_type = $${paramCount}`;
+      params.push(filters.activity_type);
+      paramCount++;
+    }
+
+    if (filters.start_date) {
+      query += ` AND af.created_at >= $${paramCount}`;
+      params.push(filters.start_date);
+      paramCount++;
+    }
+
+    if (filters.end_date) {
+      query += ` AND af.created_at <= $${paramCount}`;
+      params.push(filters.end_date);
+      paramCount++;
+    }
+
+    query += ` ORDER BY af.created_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    params.push(limit, offset);
+
+    const result = await pool.query(query, params);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding feed activities with filters:', error.message);
+    throw error;
+  }
+};
+
+// Find activities involving multiple users (mutual activities)
+const findMutualActivities = async (userId1, userId2, limit = 50, offset = 0) => {
+  try {
+    const query = `
+      SELECT * FROM activity_feed
+      WHERE (user_id = $1 AND related_user_id = $2)
+         OR (user_id = $2 AND related_user_id = $1)
+      ORDER BY created_at DESC
+      LIMIT $3 OFFSET $4
+    `;
+    const result = await pool.query(query, [userId1, userId2, limit, offset]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding mutual activities:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeActivityFeedTable,
   create,
   findByUserId,
   findFeed,
   remove,
+  findByType,
+  findByDateRange,
+  findWithFilters,
+  findFeedWithFilters,
+  findMutualActivities,
 };

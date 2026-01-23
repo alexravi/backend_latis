@@ -74,7 +74,7 @@ const isFollowing = async (followerId, followingId) => {
 const findFollowers = async (userId, limit = 50, offset = 0) => {
   try {
     const query = `
-      SELECT f.*, u.first_name, u.last_name, u.profile_image_url, u.headline
+      SELECT f.*, u.username, u.first_name, u.last_name, u.profile_image_url, u.headline
       FROM follows f
       JOIN users u ON f.follower_id = u.id
       WHERE f.following_id = $1
@@ -93,7 +93,7 @@ const findFollowers = async (userId, limit = 50, offset = 0) => {
 const findFollowing = async (userId, limit = 50, offset = 0) => {
   try {
     const query = `
-      SELECT f.*, u.first_name, u.last_name, u.profile_image_url, u.headline
+      SELECT f.*, u.username, u.first_name, u.last_name, u.profile_image_url, u.headline
       FROM follows f
       JOIN users u ON f.following_id = u.id
       WHERE f.follower_id = $1
@@ -140,6 +140,55 @@ const getFollowingCount = async (userId) => {
   }
 };
 
+// Find mutual follows (users both are following)
+const findMutualFollows = async (userId1, userId2) => {
+  try {
+    const query = `
+      SELECT DISTINCT u.id, u.first_name, u.last_name, u.profile_image_url, u.headline
+      FROM users u
+      WHERE u.id IN (
+        SELECT following_id FROM follows WHERE follower_id = $1
+      )
+      AND u.id IN (
+        SELECT following_id FROM follows WHERE follower_id = $2
+      )
+      AND u.id != $1
+      AND u.id != $2
+    `;
+    const result = await pool.query(query, [userId1, userId2]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error finding mutual follows:', error.message);
+    throw error;
+  }
+};
+
+// Get follow statistics for a user
+const getFollowStats = async (userId) => {
+  try {
+    const query = `
+      SELECT 
+        (SELECT COUNT(*) FROM follows WHERE following_id = $1) as follower_count,
+        (SELECT COUNT(*) FROM follows WHERE follower_id = $1) as following_count,
+        (SELECT COUNT(*) FROM follows f1
+         WHERE f1.follower_id = $1 
+         AND EXISTS (
+           SELECT 1 FROM follows f2 
+           WHERE f2.follower_id = $1 AND f2.following_id = f1.following_id
+         )) as mutual_follows_count
+    `;
+    const result = await pool.query(query, [userId]);
+    return {
+      follower_count: parseInt(result.rows[0].follower_count),
+      following_count: parseInt(result.rows[0].following_count),
+      mutual_follows_count: parseInt(result.rows[0].mutual_follows_count || 0),
+    };
+  } catch (error) {
+    console.error('Error getting follow stats:', error.message);
+    throw error;
+  }
+};
+
 module.exports = {
   initializeFollowsTable,
   follow,
@@ -149,4 +198,6 @@ module.exports = {
   findFollowing,
   getFollowerCount,
   getFollowingCount,
+  findMutualFollows,
+  getFollowStats,
 };

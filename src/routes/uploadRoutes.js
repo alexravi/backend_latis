@@ -185,7 +185,7 @@ router.post('/complete', completeUploadHandler);
 
 /**
  * @swagger
- * /api/media/{id}/status:
+ * /api/upload/media/{id}/status:
  *   get:
  *     summary: Get media processing status
  *     tags: [Upload]
