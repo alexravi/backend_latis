@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { hashPassword, comparePassword, generateToken } = require('../utils/auth');
 const { validateUsername, sanitizeUsername, isUsernameAvailable } = require('../utils/userUtils');
+const { verifyIdToken } = require('../config/firebase');
 
 // Helper function to mask email addresses for logging
 const maskEmail = (email) => {
@@ -63,6 +64,14 @@ const validateSignIn = [
   body('password')
     .notEmpty()
     .withMessage('Password is required'),
+];
+
+const validateGoogleSignIn = [
+  body('token')
+    .notEmpty()
+    .withMessage('Firebase ID token is required')
+    .isString()
+    .withMessage('Token must be a string'),
 ];
 
 // Sign up handler
@@ -226,6 +235,154 @@ const signIn = async (req, res) => {
   }
 };
 
+// Helper function to parse name from Firebase token
+const parseName = (name) => {
+  if (!name) {
+    return { firstName: 'User', lastName: 'Name' };
+  }
+  
+  const nameParts = name.trim().split(/\s+/);
+  if (nameParts.length === 1) {
+    return { firstName: nameParts[0], lastName: '' };
+  }
+  
+  const firstName = nameParts[0];
+  const lastName = nameParts.slice(1).join(' ');
+  return { firstName, lastName };
+};
+
+// Google OAuth sign in handler
+const signInWithGoogle = async (req, res) => {
+  const startTime = Date.now();
+  const timestamp = new Date().toISOString();
+  
+  try {
+    console.log(`[${timestamp}] [AUTH] [GOOGLE] Request received - IP: ${req.ip || req.connection.remoteAddress}`);
+    
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.warn(`[${timestamp}] [AUTH] [GOOGLE] Validation failed - Errors: ${JSON.stringify(errors.array())}`);
+      return res.status(400).json({
+        success: false,
+        errors: errors.array(),
+      });
+    }
+
+    const { token } = req.body;
+
+    if (!token) {
+      console.warn(`[${timestamp}] [AUTH] [GOOGLE] Missing token`);
+      return res.status(400).json({
+        success: false,
+        message: 'Firebase ID token is required',
+      });
+    }
+
+    // Verify Firebase ID token
+    console.log(`[${timestamp}] [AUTH] [GOOGLE] Verifying Firebase ID token`);
+    let decodedToken;
+    try {
+      decodedToken = await verifyIdToken(token);
+    } catch (error) {
+      console.warn(`[${timestamp}] [AUTH] [GOOGLE] Token verification failed - Error: ${error.message}`);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired token',
+      });
+    }
+
+    // Extract user information from token
+    const email = decodedToken.email;
+    const uid = decodedToken.uid;
+    const name = decodedToken.name || '';
+    const picture = decodedToken.picture || null;
+
+    if (!email) {
+      console.warn(`[${timestamp}] [AUTH] [GOOGLE] Token missing email - UID: ${uid}`);
+      return res.status(400).json({
+        success: false,
+        message: 'Token does not contain email',
+      });
+    }
+
+    console.log(`[${timestamp}] [AUTH] [GOOGLE] Token verified - Email: ${maskEmail(email)}, UID: ${uid}`);
+
+    // Parse name into first_name and last_name
+    const { firstName, lastName } = parseName(name);
+
+    // Check if user already exists
+    console.log(`[${timestamp}] [AUTH] [GOOGLE] Checking if user exists - Email: ${maskEmail(email)}`);
+    const existingUser = await User.findByEmail(email);
+    
+    let user;
+    if (existingUser) {
+      // User exists - sign in
+      console.log(`[${timestamp}] [AUTH] [GOOGLE] User exists - UserId: ${existingUser.id}, Email: ${maskEmail(email)}`);
+      user = existingUser;
+      
+      // Optionally update profile image if it's not set or if Firebase has a newer one
+      if (picture && (!existingUser.profile_image_url || existingUser.profile_image_url !== picture)) {
+        try {
+          await User.updateProfile(existingUser.id, { profile_image_url: picture });
+          user.profile_image_url = picture;
+        } catch (updateError) {
+          // Log but don't fail the request
+          console.warn(`[${timestamp}] [AUTH] [GOOGLE] Failed to update profile image - Error: ${updateError.message}`);
+        }
+      }
+    } else {
+      // User doesn't exist - create new user
+      console.log(`[${timestamp}] [AUTH] [GOOGLE] Creating new user - Email: ${maskEmail(email)}, Name: ${firstName} ${lastName}`);
+      try {
+        user = await User.createOAuthUser(email, firstName, lastName, picture);
+        console.log(`[${timestamp}] [AUTH] [GOOGLE] User created successfully - UserId: ${user.id}, Email: ${maskEmail(email)}, Username: ${user.username}`);
+      } catch (createError) {
+        // Check if error is due to duplicate email (race condition)
+        if (createError.code === '23505' || createError.message?.includes('duplicate') || createError.message?.includes('unique')) {
+          console.warn(`[${timestamp}] [AUTH] [GOOGLE] Duplicate email detected (race condition) - Email: ${maskEmail(email)}`);
+          // Try to fetch the existing user
+          user = await User.findByEmail(email);
+          if (!user) {
+            throw new Error('Failed to create or retrieve user');
+          }
+        } else {
+          throw createError;
+        }
+      }
+    }
+
+    // Generate JWT token
+    console.log(`[${timestamp}] [AUTH] [GOOGLE] Generating JWT token - UserId: ${user.id}, Email: ${maskEmail(email)}`);
+    const jwtToken = generateToken(user.id, user.email);
+    console.log(`[${timestamp}] [AUTH] [GOOGLE] JWT token generated successfully - UserId: ${user.id}`);
+
+    const duration = Date.now() - startTime;
+    console.log(`[${timestamp}] [AUTH] [GOOGLE] Request completed successfully - UserId: ${user.id}, Email: ${maskEmail(email)}, Duration: ${duration}ms, Status: ${existingUser ? 200 : 201}`);
+
+    // Return token and user info (without password)
+    res.status(existingUser ? 200 : 201).json({
+      success: true,
+      token: jwtToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        profile_image_url: user.profile_image_url || null,
+      },
+    });
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error(`[${timestamp}] [AUTH] [GOOGLE] Error occurred - Error: ${error.message}, Stack: ${error.stack}, Duration: ${duration}ms`);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
 // Logout handler
 const logout = async (req, res) => {
   const startTime = Date.now();
@@ -259,7 +416,9 @@ const logout = async (req, res) => {
 module.exports = {
   signUp,
   signIn,
+  signInWithGoogle,
   logout,
   validateSignUp,
   validateSignIn,
+  validateGoogleSignIn,
 };

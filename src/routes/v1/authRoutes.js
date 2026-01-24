@@ -6,9 +6,11 @@ const { authLimiter } = require('../../middleware/rateLimiter');
 const {
   signUp,
   signIn,
+  signInWithGoogle,
   logout,
   validateSignUp,
   validateSignIn,
+  validateGoogleSignIn,
 } = require('../../controllers/authController');
 
 /**
@@ -90,6 +92,59 @@ router.post('/signup', authLimiter, validateSignUp, signUp);
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.post('/signin', authLimiter, validateSignIn, signIn);
+
+/**
+ * @swagger
+ * /api/v1/auth/google:
+ *   post:
+ *     summary: Sign in or sign up with Google OAuth
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - token
+ *             properties:
+ *               token:
+ *                 type: string
+ *                 description: Firebase ID token from Google authentication
+ *                 example: "eyJhbGciOiJSUzI1NiIsImtpZCI6Ij..."
+ *     responses:
+ *       200:
+ *         description: Existing user successfully signed in
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthResponse'
+ *       201:
+ *         description: New user successfully created and signed in
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthResponse'
+ *       400:
+ *         description: Validation error or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       401:
+ *         description: Invalid or expired Firebase token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+router.post('/google', authLimiter, validateGoogleSignIn, signInWithGoogle);
 
 /**
  * @swagger

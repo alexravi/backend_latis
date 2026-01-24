@@ -322,7 +322,7 @@ router.get('/autocomplete', authenticateToken, autocomplete);
  *         name: type
  *         schema:
  *           type: string
- *         description: Filter by types (comma-separated: people,companies,colleges,groups,topics,posts,jobs)
+ *         description: "Filter by types (comma-separated: people,companies,colleges,groups,topics,posts,jobs)"
  *     responses:
  *       200:
  *         description: Search results
