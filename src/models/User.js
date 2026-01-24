@@ -1,6 +1,7 @@
 // User model and database operations
 const { pool } = require('../config/database');
 const { generateUsername, sanitizeUsername, isUsernameAvailable } = require('../utils/userUtils');
+const { hashPassword } = require('../utils/auth');
 
 // Initialize users table
 const initializeUsersTable = async () => {
@@ -313,6 +314,71 @@ const create = async (email, hashedPassword, firstName, lastName, username = nul
   }
 };
 
+// Create OAuth user (Google, etc.) - generates random password since password field is NOT NULL
+const createOAuthUser = async (email, firstName, lastName, profileImageUrl = null, username = null) => {
+  try {
+    // Validate required fields
+    if (!firstName || !lastName) {
+      throw new Error('First name and last name are required');
+    }
+
+    // Generate a random password and hash it (OAuth users won't use it, but field is NOT NULL)
+    const crypto = require('crypto');
+    const randomPassword = crypto.randomBytes(32).toString('hex');
+    const hashedPassword = await hashPassword(randomPassword);
+    
+    // Generate username if not provided
+    let finalUsername = username;
+    if (!finalUsername) {
+      finalUsername = await generateUsername(firstName, lastName);
+    } else {
+      // Sanitize and validate provided username
+      finalUsername = sanitizeUsername(finalUsername);
+      const available = await isUsernameAvailable(finalUsername);
+      if (!available) {
+        throw new Error('Username is already taken');
+      }
+    }
+    
+    // Build query with optional profile_image_url
+    const fields = ['email', 'password', 'username', 'first_name', 'last_name'];
+    const values = [email, hashedPassword, finalUsername, firstName, lastName];
+    let paramCount = values.length;
+
+    if (profileImageUrl) {
+      fields.push('profile_image_url');
+      values.push(profileImageUrl);
+      paramCount++;
+    }
+
+    const placeholders = values.map((_, index) => `$${index + 1}`).join(', ');
+    
+    const query = `
+      INSERT INTO users (${fields.join(', ')})
+      VALUES (${placeholders})
+      RETURNING id, email, username, first_name, last_name, profile_image_url, created_at, updated_at
+    `;
+    const result = await pool.query(query, values);
+    
+    // If username was generated and might not be unique enough, regenerate with user ID
+    if (!username && result.rows[0]) {
+      const userId = result.rows[0].id;
+      const betterUsername = await generateUsername(firstName, lastName, userId);
+      if (betterUsername !== finalUsername) {
+        // Update with better username if different
+        const updateQuery = 'UPDATE users SET username = $1 WHERE id = $2 RETURNING username';
+        const updateResult = await pool.query(updateQuery, [betterUsername, userId]);
+        result.rows[0].username = updateResult.rows[0].username;
+      }
+    }
+    
+    return result.rows[0];
+  } catch (error) {
+    console.error('Error creating OAuth user:', error.message);
+    throw error;
+  }
+};
+
 // Update username
 const updateUsername = async (userId, username) => {
   try {
@@ -346,6 +412,7 @@ module.exports = {
   findById,
   findByUsername,
   create,
+  createOAuthUser,
   updateProfile,
   updateUsername,
 };
