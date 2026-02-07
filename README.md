@@ -113,3 +113,5 @@ See: `API_DOCUMENTATION_SOCIAL_GRAPH_ACTIVITY_VISITORS.md`
 - `DB_PASSWORD` - Database password
 - `JWT_SECRET` - Secret key for JWT token signing (required for authentication)
 - `JWT_EXPIRES_IN` - JWT token expiration time (default: "24h", e.g., "7d", "1h")
+- `AUTH_RATE_LIMIT_MAX` - Max auth attempts (signin/signup/google) per IP per window (default: 15 in dev, 5 in prod). Only failed attempts count; successful login does not consume the limit.
+- `RATE_LIMIT_WINDOW_MS` - Rate limit window in ms (default: 900000 = 15 minutes)

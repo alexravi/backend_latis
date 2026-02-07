@@ -108,7 +108,7 @@ const getAuthLimit = () => {
   if (process.env.AUTH_RATE_LIMIT_MAX) {
     return parseInt(process.env.AUTH_RATE_LIMIT_MAX);
   }
-  return 5; // Keep strict for security
+  return isDevelopment ? 15 : 5; // Dev: 15 attempts, Prod: 5 (brute-force protection)
 };
 
 const getWriteLimit = () => {
@@ -169,7 +169,7 @@ const generalLimiter = rateLimit({
   },
 });
 
-// Strict rate limiter for authentication endpoints
+// Strict rate limiter for authentication endpoints (limits failed attempts per IP)
 const authLimiter = rateLimit({
   store: getStore(),
   windowMs: windowMs,
@@ -180,7 +180,7 @@ const authLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: false, // Count successful requests too
+  skipSuccessfulRequests: true, // Only count failed attempts; successful login does not consume limit
 });
 
 // Strict rate limiter for write operations (POST, PUT, DELETE)
