@@ -56,9 +56,17 @@ const create = async (activityData) => {
 const findByUserId = async (userId, limit = 50, offset = 0) => {
   try {
     const query = `
-      SELECT * FROM activity_feed
-      WHERE user_id = $1
-      ORDER BY created_at DESC
+      SELECT 
+        af.*,
+        u.first_name, u.last_name, u.profile_image_url,
+        p.content as post_content, p.upvotes_count, p.comments_count,
+        c.content as comment_content
+      FROM activity_feed af
+      JOIN users u ON af.user_id = u.id
+      LEFT JOIN posts p ON af.related_post_id = p.id
+      LEFT JOIN comments c ON af.related_comment_id = c.id
+      WHERE af.user_id = $1
+      ORDER BY af.created_at DESC
       LIMIT $2 OFFSET $3
     `;
     const result = await pool.query(query, [userId, limit, offset]);
@@ -73,9 +81,13 @@ const findByUserId = async (userId, limit = 50, offset = 0) => {
 const findFeed = async (userId, limit = 50, offset = 0) => {
   try {
     const query = `
-      SELECT af.*, u.first_name, u.last_name, u.profile_image_url
+      SELECT af.*, u.first_name, u.last_name, u.profile_image_url,
+             p.content as post_content, p.upvotes_count, p.comments_count,
+             c.content as comment_content
       FROM activity_feed af
       JOIN users u ON af.user_id = u.id
+      LEFT JOIN posts p ON af.related_post_id = p.id
+      LEFT JOIN comments c ON af.related_comment_id = c.id
       WHERE af.user_id = $1
          OR EXISTS (
            SELECT 1 FROM follows f
@@ -149,29 +161,40 @@ const findByDateRange = async (userId, startDate, endDate, limit = 50, offset = 
 // Find activities with filters (type and/or date range)
 const findWithFilters = async (userId, filters = {}, limit = 50, offset = 0) => {
   try {
-    let query = 'SELECT * FROM activity_feed WHERE user_id = $1';
+    let query = `
+      SELECT 
+        af.*,
+        u.first_name, u.last_name, u.profile_image_url,
+        p.content as post_content, p.upvotes_count, p.comments_count,
+        c.content as comment_content
+      FROM activity_feed af
+      JOIN users u ON af.user_id = u.id
+      LEFT JOIN posts p ON af.related_post_id = p.id
+      LEFT JOIN comments c ON af.related_comment_id = c.id
+      WHERE af.user_id = $1
+    `;
     const params = [userId];
     let paramCount = 2;
 
     if (filters.activity_type) {
-      query += ` AND activity_type = $${paramCount}`;
+      query += ` AND af.activity_type = $${paramCount}`;
       params.push(filters.activity_type);
       paramCount++;
     }
 
     if (filters.start_date) {
-      query += ` AND created_at >= $${paramCount}`;
+      query += ` AND af.created_at >= $${paramCount}`;
       params.push(filters.start_date);
       paramCount++;
     }
 
     if (filters.end_date) {
-      query += ` AND created_at <= $${paramCount}`;
+      query += ` AND af.created_at <= $${paramCount}`;
       params.push(filters.end_date);
       paramCount++;
     }
 
-    query += ` ORDER BY created_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    query += ` ORDER BY af.created_at DESC LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
     params.push(limit, offset);
 
     const result = await pool.query(query, params);
@@ -181,6 +204,7 @@ const findWithFilters = async (userId, filters = {}, limit = 50, offset = 0) => 
     throw error;
   }
 };
+
 
 // Find feed activities with filters
 const findFeedWithFilters = async (userId, filters = {}, limit = 50, offset = 0) => {

@@ -3,6 +3,49 @@ const ActivityFeed = require('../models/ActivityFeed');
 const User = require('../models/User');
 const Block = require('../models/Block');
 
+// Helper to transform activity feed item
+const transformActivity = (activity) => {
+  let activityData = activity.activity_data || {};
+
+  // Create user object from joined fields
+  const user = {
+    id: activity.user_id,
+    first_name: activity.first_name,
+    last_name: activity.last_name,
+    profile_image_url: activity.profile_image_url
+  };
+
+  // Create post object if related post exists
+  let post = null;
+  if (activity.related_post_id) {
+    post = {
+      id: activity.related_post_id,
+      content: activity.post_content,
+      upvotes_count: activity.upvotes_count,
+      comments_count: activity.comments_count
+    };
+  }
+
+  // If comment content exists, add to activity_data
+  if (activity.comment_content) {
+    activityData = { ...activityData, content: activity.comment_content };
+  }
+
+  // Clean up flat fields
+  const {
+    first_name, last_name, profile_image_url,
+    post_content, upvotes_count: post_upvotes, comments_count: post_comments, comment_content,
+    ...rest
+  } = activity;
+
+  return {
+    ...rest,
+    user,
+    post,
+    activity_data: activityData
+  };
+};
+
 // Get activity feed (activities from connections/following)
 const getActivityFeed = async (req, res) => {
   try {
@@ -36,7 +79,7 @@ const getActivityFeed = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: filteredActivities,
+      data: filteredActivities.map(transformActivity),
       pagination: {
         limit,
         offset,
@@ -75,7 +118,7 @@ const getMyActivities = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: activities,
+      data: activities.map(transformActivity),
       pagination: {
         limit,
         offset,
@@ -141,7 +184,7 @@ const getUserActivities = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: activities,
+      data: activities.map(transformActivity),
       pagination: {
         limit,
         offset,
@@ -199,7 +242,7 @@ const getActivities = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: activities,
+      data: activities.map(transformActivity),
       pagination: {
         limit,
         offset,
