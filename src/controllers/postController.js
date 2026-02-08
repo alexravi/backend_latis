@@ -141,14 +141,14 @@ const getFeed = async (req, res) => {
     let posts;
     let fromCache = false;
     let isStale = false;
-    
+
     if (offset === 0 && (sortBy === 'new' || sortBy === 'hot')) {
       const cachedResult = await getPostFeed(userId, sortBy, limit, offset);
       if (cachedResult) {
         posts = cachedResult.data;
         fromCache = true;
         isStale = cachedResult.isStale;
-        
+
         // If stale, trigger background refresh (stale-while-revalidate pattern)
         if (isStale) {
           // Refresh in background without blocking response
@@ -186,13 +186,13 @@ const getFeed = async (req, res) => {
     });
 
     // Batch fetch media for all posts (reuse postIds from above)
-    const allMedia = postIds.length > 0 
+    const allMedia = postIds.length > 0
       ? await pool.query(
-          'SELECT * FROM post_media WHERE post_id = ANY($1) ORDER BY post_id, display_order ASC',
-          [postIds]
-        )
+        'SELECT * FROM post_media WHERE post_id = ANY($1) ORDER BY post_id, display_order ASC',
+        [postIds]
+      )
       : { rows: [] };
-    
+
     const mediaByPostId = {};
     allMedia.rows.forEach(media => {
       if (!mediaByPostId[media.post_id]) {
@@ -200,8 +200,8 @@ const getFeed = async (req, res) => {
       }
       // Parse variants if present
       if (media.variants) {
-        media.variants = typeof media.variants === 'string' 
-          ? JSON.parse(media.variants) 
+        media.variants = typeof media.variants === 'string'
+          ? JSON.parse(media.variants)
           : media.variants;
       }
       mediaByPostId[media.post_id].push(media);
@@ -212,7 +212,7 @@ const getFeed = async (req, res) => {
       const reaction = reactionsByPostId[post.id];
       const postMedia = mediaByPostId[post.id] || [];
       const mediaDescriptors = postMedia.map(m => PostMedia.toDescriptor(m));
-      
+
       const postData = {
         ...post,
         user_vote: reaction ? reaction.reaction_type : null,
@@ -427,7 +427,7 @@ const upvotePost = async (req, res) => {
 
     // Check existing reaction to determine behavior
     const existingReaction = await Reaction.findReaction(userId, postId, null);
-    
+
     const reaction = await Reaction.create({
       user_id: userId,
       post_id: postId,
@@ -470,6 +470,22 @@ const upvotePost = async (req, res) => {
           user_vote: 'upvote',
         },
       });
+
+      // Create activity for upvote
+      try {
+        const ActivityFeed = require('../models/ActivityFeed');
+        await ActivityFeed.create({
+          user_id: userId,
+          activity_type: 'reaction_added',
+          activity_data: {
+            post_id: postId,
+            reaction_type: 'upvote'
+          },
+          related_post_id: postId,
+        });
+      } catch (activityError) {
+        console.error('Error creating activity for upvote:', activityError.message);
+      }
     }
   } catch (error) {
     console.error('Upvote post error:', error.message);
@@ -504,7 +520,7 @@ const downvotePost = async (req, res) => {
 
     // Check existing reaction to determine behavior
     const existingReaction = await Reaction.findReaction(userId, postId, null);
-    
+
     const reaction = await Reaction.create({
       user_id: userId,
       post_id: postId,
@@ -547,6 +563,22 @@ const downvotePost = async (req, res) => {
           user_vote: 'downvote',
         },
       });
+
+      // Create activity for downvote
+      try {
+        const ActivityFeed = require('../models/ActivityFeed');
+        await ActivityFeed.create({
+          user_id: userId,
+          activity_type: 'reaction_added',
+          activity_data: {
+            post_id: postId,
+            reaction_type: 'downvote'
+          },
+          related_post_id: postId,
+        });
+      } catch (activityError) {
+        console.error('Error creating activity for downvote:', activityError.message);
+      }
     }
   } catch (error) {
     console.error('Downvote post error:', error.message);
@@ -665,6 +697,23 @@ const repostPost = async (req, res) => {
     }, client);
 
     await client.query('COMMIT');
+
+    // Create activity for repost
+    try {
+      const ActivityFeed = require('../models/ActivityFeed');
+      await ActivityFeed.create({
+        user_id: userId,
+        activity_type: 'repost_created',
+        activity_data: {
+          post_id: repost.id,
+          original_post_id: originalPostId,
+          title: 'Reposted a post'
+        },
+        related_post_id: repost.id,
+      });
+    } catch (activityError) {
+      console.error('Error creating activity for repost:', activityError.message);
+    }
 
     // Emit event for real-time updates
     emitPostReposted(repost, originalPostId);

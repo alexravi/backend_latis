@@ -80,7 +80,7 @@ const createComment = async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      
+
       const comment = await Comment.create(commentData, { client });
 
       // Increment comment count on post
@@ -100,8 +100,8 @@ const createComment = async (req, res) => {
         await ActivityFeed.create({
           user_id: req.user.id,
           activity_type: activityType,
-          activity_data: { 
-            post_id: postId, 
+          activity_data: {
+            post_id: postId,
             comment_id: comment.id,
             parent_comment_id: commentData.parent_comment_id || null,
           },
@@ -166,12 +166,12 @@ const addVotesToTree = (comments, reactionsByCommentId) => {
       ...comment,
       user_vote: reaction ? reaction.reaction_type : null,
     };
-    
+
     // Recursively add votes to replies
     if (comment.replies && comment.replies.length > 0) {
       commentWithVote.replies = addVotesToTree(comment.replies, reactionsByCommentId);
     }
-    
+
     return commentWithVote;
   });
 };
@@ -201,7 +201,7 @@ const getPostComments = async (req, res) => {
       const limit = parseInt(req.query.limit) || 50;
       const offset = parseInt(req.query.offset) || 0;
       comments = await Comment.findByPostIdSorted(postId, sortBy, limit, offset);
-      
+
       // Add votes for flat structure
       const commentIds = comments.map(c => c.id);
       const reactions = await Reaction.findReactionsByCommentIds(userId, commentIds);
@@ -209,7 +209,7 @@ const getPostComments = async (req, res) => {
       reactions.forEach(reaction => {
         reactionsByCommentId[reaction.comment_id] = reaction;
       });
-      
+
       comments = comments.map(comment => {
         const reaction = reactionsByCommentId[comment.id];
         return {
@@ -231,7 +231,7 @@ const getPostComments = async (req, res) => {
 
     // Collect all comment IDs from tree (all nesting levels)
     const allCommentIds = collectCommentIds(comments);
-    
+
     // Batch fetch user's reactions for all comments
     const reactions = await Reaction.findReactionsByCommentIds(userId, allCommentIds);
     const reactionsByCommentId = {};
@@ -315,7 +315,7 @@ const getCommentById = async (req, res) => {
 
     // For tree structure: collect all comment IDs and add votes
     const allCommentIds = collectCommentIds([comment]);
-    
+
     // Batch fetch user's reactions for all comments in tree
     const reactions = await Reaction.findReactionsByCommentIds(userId, allCommentIds);
     const reactionsByCommentId = {};
@@ -328,7 +328,7 @@ const getCommentById = async (req, res) => {
       ...comment,
       user_vote: reactionsByCommentId[comment.id] ? reactionsByCommentId[comment.id].reaction_type : null,
     };
-    
+
     if (comment.replies && comment.replies.length > 0) {
       commentWithVote.replies = addVotesToTree(comment.replies, reactionsByCommentId);
     }
@@ -478,7 +478,7 @@ const upvoteComment = async (req, res) => {
 
     // Check existing reaction to determine behavior
     const existingReaction = await Reaction.findReaction(userId, null, commentId);
-    
+
     const reaction = await Reaction.create({
       user_id: userId,
       comment_id: commentId,
@@ -521,6 +521,22 @@ const upvoteComment = async (req, res) => {
           user_vote: 'upvote',
         },
       });
+
+      // Create activity for upvote
+      try {
+        const ActivityFeed = require('../models/ActivityFeed');
+        await ActivityFeed.create({
+          user_id: userId,
+          activity_type: 'reaction_added',
+          activity_data: {
+            comment_id: commentId,
+            reaction_type: 'upvote'
+          },
+          related_comment_id: commentId,
+        });
+      } catch (activityError) {
+        console.error('Error creating activity for comment upvote:', activityError.message);
+      }
     }
   } catch (error) {
     console.error('Upvote comment error:', error.message);
@@ -555,7 +571,7 @@ const downvoteComment = async (req, res) => {
 
     // Check existing reaction to determine behavior
     const existingReaction = await Reaction.findReaction(userId, null, commentId);
-    
+
     const reaction = await Reaction.create({
       user_id: userId,
       comment_id: commentId,
@@ -598,6 +614,22 @@ const downvoteComment = async (req, res) => {
           user_vote: 'downvote',
         },
       });
+
+      // Create activity for downvote
+      try {
+        const ActivityFeed = require('../models/ActivityFeed');
+        await ActivityFeed.create({
+          user_id: userId,
+          activity_type: 'reaction_added',
+          activity_data: {
+            comment_id: commentId,
+            reaction_type: 'downvote'
+          },
+          related_comment_id: commentId,
+        });
+      } catch (activityError) {
+        console.error('Error creating activity for comment downvote:', activityError.message);
+      }
     }
   } catch (error) {
     console.error('Downvote comment error:', error.message);
